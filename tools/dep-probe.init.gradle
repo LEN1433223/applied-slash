@@ -1,0 +1,115 @@
+// ============================================================================
+// 依赖仓库探针(init script,用 gradlew -I 加载)
+// ----------------------------------------------------------------------------
+// 为什么需要它:这个开发沙箱里 PowerShell/curl 的 HTTPS 会被安全策略拦掉
+// (schannel SEC_E_NO_CREDENTIALS),但 **JVM 自己的 TLS 是好的** —— Gradle 能联网。
+// 所以要核对"某个依赖的 Maven 坐标到底存不存在",只能借 JVM 发请求。
+//
+// 用途:把 libs/ 下的本地 jar 依赖改造成正式 Maven 坐标之前,先确认
+//   ① 仓库地址可达;② 该坐标的 maven-metadata.xml 里确实有我们要的版本。
+//
+// 用法:
+//   gradlew probeDeps -I tools/dep-probe.init.gradle
+// ============================================================================
+
+gradle.rootProject { proj ->
+    proj.tasks.register('probeModrinth') {
+        group = 'verification'
+        description = '用 Modrinth API 查出依赖的 slug / 版本号(用于构造 maven.modrinth 坐标)'
+        doLast {
+            def client = java.net.http.HttpClient.newBuilder()
+                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                    .connectTimeout(java.time.Duration.ofSeconds(15))
+                    .build()
+            def getJson = { String url ->
+                def request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
+                        .timeout(java.time.Duration.ofSeconds(30))
+                        .header('User-Agent', 'applied-slash-dependency-probe/1.0')
+                        .GET().build()
+                def response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())
+                return [response.statusCode(), response.body()]
+            }
+
+            // 我们要找的两个:AE2 19.2.17 与 SlashBlade 2.0.7-1.21.1
+            def wanted = ['19.2.17': 'AE2', '2.0.7': 'SlashBlade']
+            ['applied energistics', 'slashblade', 'applied energistics 2'].each { q ->
+                def (status, body) = getJson("https://api.modrinth.com/v2/search?limit=8&query=${java.net.URLEncoder.encode(q, 'UTF-8')}")
+                println("\n=== 搜索 \"${q}\" → HTTP ${status} ===")
+                if (status != 200) {
+                    println('  非 200,跳过')
+                    return
+                }
+                // 从 search 结果里抓每个 hit 的 slug / title / versions,判断是否包含我们需要的版本
+                def hits = (body =~ /"slug":"([^"]+)"[^}]*?"title":"([^"]+)"[^}]*?"versions":\[([^\]]*)\]/)
+                def seen = [] as Set
+                hits.each { m ->
+                    def slug = m[1]
+                    def title = m[2]
+                    def versions = m[3]
+                    if (seen.contains(slug)) {
+                        return
+                    }
+                    seen << slug
+                    def matched = wanted.findAll { ver, label -> versions.contains("\"${ver}\"") }.collect { it.value }
+                    println("  slug=${slug}  title=${title}" + (matched ? "   ★ 命中: ${matched.join(', ')}" : ''))
+                }
+            }
+        }
+    }
+
+    proj.tasks.register('probeDeps') {
+        group = 'verification'
+        description = '探测候选 Maven 仓库与坐标是否存在(走 JVM HttpClient)'
+        doLast {
+            def candidates = [
+                    // ---- AE2 官方 Maven(两种常见路径都试)----
+                    'https://maven.appliedenergistics.org/',
+                    'https://maven.appliedenergistics.org/releases/appeng/appliedenergistics2/maven-metadata.xml',
+                    'https://maven.appliedenergistics.org/appeng/appliedenergistics2/maven-metadata.xml',
+                    'https://maven.appliedenergistics.org/releases/appeng/appliedenergistics2/19.2.17/appliedenergistics2-19.2.17.pom',
+                    // ---- GuideME(AE2 团队的说明文档库)----
+                    'https://maven.appliedenergistics.org/releases/guideme/guideme/maven-metadata.xml',
+                    'https://maven.appliedenergistics.org/guideme/guideme/maven-metadata.xml',
+                    // ---- Modrinth Maven(附属模组通常在这)----
+                    'https://api.modrinth.com/maven/maven/modrinth/slashblade/maven-metadata.xml',
+                    'https://api.modrinth.com/maven/maven/modrinth/slashblade-resharpened/maven-metadata.xml',
+                    'https://api.modrinth.com/maven/maven/modrinth/guideme/maven-metadata.xml',
+                    // ---- 备选:Curse Maven / BlameJared(AE2 旧坐标曾在此)----
+                    'https://cursemaven.com/',
+                    'https://maven.blamejared.com/appeng/appliedenergistics2/maven-metadata.xml',
+                    // ---- CurseForge(判断上传 API 是否可达:403/401 = 通但缺 key;ConnectException = 被拦)----
+                    'https://www.curseforge.com/',
+                    'https://minecraft.curseforge.com/api/game/versions',
+                    'https://api.curseforge.com/v1/games',
+                    'https://authors.curseforge.com/',
+            ]
+
+            def client = java.net.http.HttpClient.newBuilder()
+                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                    .connectTimeout(java.time.Duration.ofSeconds(15))
+                    .build()
+
+            candidates.each { url ->
+                try {
+                    def request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
+                            .timeout(java.time.Duration.ofSeconds(25))
+                            .GET().build()
+                    def response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())
+                    println("[${response.statusCode()}] ${url}")
+                    if (response.statusCode() == 200) {
+                        def interesting = response.body().readLines()
+                                .findAll { it.contains('latest') || it.contains('release') || it.contains('lastUpdated') }
+                                .take(3)
+                        if (interesting) {
+                            println('      ' + interesting.collect { it.trim() }.join(' | '))
+                        } else {
+                            println('      (内容不含版本元数据,可能不是 maven-metadata)')
+                        }
+                    }
+                } catch (Exception failure) {
+                    println("[ERR] ${url} -> ${failure.class.simpleName}: ${failure.message}")
+                }
+            }
+        }
+    }
+}

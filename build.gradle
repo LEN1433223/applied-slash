@@ -149,7 +149,11 @@ dependencies {
     // localRuntime：仅在 dev 环境（runClient / runServer）提供这些前置，不会传递给下游。
 
     // AE2 —— modid "ae2"，19.2.17（MC 1.21.1 / NeoForge >= 21.1.169），API 包 appeng.api
-    compileOnly files('libs/ae2-19.2.17.jar')
+    // 本地有 jar 就用本地（开发机版本严格可控）；没有就回落到 AE2 官方 Maven，
+    // 这样**克隆者与 GitHub CI 也能构建**（libs/ 里的第三方 jar 按版权不进仓库）。
+    compileOnly file('libs/ae2-19.2.17.jar').exists()
+            ? files('libs/ae2-19.2.17.jar')
+            : 'appeng:appliedenergistics2:19.2.17'
     if (!project.hasProperty('noAe2')) {
         localRuntime files('libs/ae2-19.2.17.jar')
         // GuideME —— AE2 的强制前置（modid "guideme"）。
@@ -161,7 +165,11 @@ dependencies {
     }
 
     // SlashBlade: Resharpened —— modid "slashblade"，2.0.7-1.21.1（NeoForge >= 21.1.228）
-    compileOnly files('libs/slashblade-2.0.7-1.21.1.jar')
+    // 同样"本地 jar 优先、否则走 Modrinth Maven"。slug 用 Modrinth API 实证过:
+    // 是 slashblade-resharped(注意拼写是 Resharped,不是 Resharpened)。
+    compileOnly file('libs/slashblade-2.0.7-1.21.1.jar').exists()
+            ? files('libs/slashblade-2.0.7-1.21.1.jar')
+            : 'maven.modrinth:slashblade-resharped:2.0.7-1.21.1'
     if (!project.hasProperty('noSlashblade')) {
         localRuntime files('libs/slashblade-2.0.7-1.21.1.jar')
     }
