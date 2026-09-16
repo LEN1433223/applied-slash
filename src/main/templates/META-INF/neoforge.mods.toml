@@ -82,20 +82,27 @@ AE2 Slash Storage / Applied Slash
     ordering="NONE"
     side="BOTH"
 
-# ---- Applied Slash 前置：AE2（ME 存储网络 / 存储元件 API）----
-# 声明为 optional：缺少 AE2 时本模组照常加载，拔刀剑存储元件在运行期通过
-# ModList.get().isLoaded("ae2") 判定后再注册，不产生类加载崩溃。
+# ---- Applied Slash 前置：AE2（ME 存储网络 / 存储元件 API / 网格与能量 API）----
+# 声明为 required：存储元件与充能方块都依赖 AE2 的网格与能量 API。
+# ⚠ 破坏性变更：只用「不可堆叠物品存储元件」且未装 AE2 的现有用户在升级后会被 FML 拦下启动。
+# 运行期的 ModList.get().isLoaded("ae2") 门卫**保留** —— 它不再承担"可选依赖"职责，
+# 而是【类加载隔离】：引用 appeng.* 的类必须只在门卫之后加载。
 [[dependencies.${mod_id}]]
     modId="ae2"
-    type="optional"
+    type="required"
+    reason="Applied Slash 的存储元件与充能方块依赖 AE2 的网格与能量 API"
     versionRange="[19.2.17,)"
     ordering="AFTER"
     side="BOTH"
 
 # ---- Applied Slash 前置：SlashBlade: Resharpened（拔刀剑本体）----
+# 声明为 required：5 把充能拔刀剑继承 ItemSlashBlade，刀身数据是刀的核心状态。
+# ⚠ 破坏性变更：未装 SlashBlade 的现有用户升级后会被 FML 拦下启动。
+# 代码门卫同样保留，理由是类加载隔离（见上）。
 [[dependencies.${mod_id}]]
     modId="slashblade"
-    type="optional"
+    type="required"
+    reason="5 把充能拔刀剑继承 ItemSlashBlade，刀身数据是刀的核心状态"
     versionRange="[2.0.7,)"
     ordering="AFTER"
     side="BOTH"

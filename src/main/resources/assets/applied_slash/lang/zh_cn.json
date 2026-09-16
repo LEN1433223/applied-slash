@@ -1,5 +1,5 @@
 {
-  "itemGroup.applied_slash": "应用能源 · 拔刀剑",
+  "itemGroup.applied_slash": "Slash存储元件",
 
   "item.applied_slash.slash_blade_cell": "SlashBlade存储元件",
   "item.applied_slash.slash_blade_cell.tooltip.usage": "已存储 %s / %s 种,合计 %s 把",
@@ -32,5 +32,22 @@
   "command.applied_slash.inspect.extract_rejected": "SIMULATE 探测即被拒(=0):AE2 取出的第一步就返回 0,于是什么都不做 —— 这正是【终端点了没反应】的成因",
   "command.applied_slash.inspect.extract_modulate": "MODULATE 实际取出 = %s",
   "command.applied_slash.inspect.extract_reinsert": "原样放回 = %s(应等于上一个数字,净改动为 0)",
-  "command.applied_slash.inspect.error": "诊断过程异常:%s"
+  "command.applied_slash.inspect.error": "诊断过程异常:%s",
+
+  "item.applied_slash.charged_blade_pulse": "充能刀·脉冲",
+  "item.applied_slash.charged_blade_resonance": "充能刀·谐振",
+  "item.applied_slash.charged_blade_surge": "充能刀·涌流",
+  "item.applied_slash.charged_blade_overcharge": "充能刀·超荷",
+  "item.applied_slash.charged_blade_singularity": "充能刀·奇点",
+  "item.applied_slash.charged_blade.tooltip.energy": "能量 %s / %s",
+  "item.applied_slash.charged_blade.tooltip.empty": "能量耗尽:无法使用",
+  "item.applied_slash.charged_blade.tooltip.quantize": "入库按 1/10 档记录(取出取下界,最多少 %s 点)",
+
+  "block.applied_slash.blade_charger": "拔刀剑充能器",
+  "container.applied_slash.blade_charger": "拔刀剑充能器",
+  "applied_slash.blade_charger.status.idle": "未放刀",
+  "applied_slash.blade_charger.status.charging": "充能中(%s AE/点)",
+  "applied_slash.blade_charger.status.full": "已充满",
+  "applied_slash.blade_charger.status.no_ae": "网络缺电",
+  "applied_slash.charged_blade.no_energy_hint": "能量耗尽:无法攻击"
 }

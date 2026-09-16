@@ -172,6 +172,20 @@ public class AppliedSlashClient {
     }
 
     /**
+     * 充能方块的界面注册(照 {@link #registerItemColors} 的转发模式:客户端入口只做转发,
+     * 具体类留在 charged 包里,并且被 AE2 门卫包住)。
+     *
+     * <p>NEEDS_JAVAP: net.neoforged.neoforge.client.event.RegisterMenuScreensEvent#register(MenuType, ScreenConstructor)
+     * 在 1.21.1 的签名(N30)
+     */
+    @SubscribeEvent
+    static void onRegisterMenuScreens(net.neoforged.neoforge.client.event.RegisterMenuScreensEvent event) {
+        if (AppliedSlash.isAe2Loaded()) {
+            com.applied.slash.charged.client.BladeChargerScreen.register(event);
+        }
+    }
+
+    /**
      * 反射读 {@code Minecraft.pendingReload} 的状态 —— 它是"资源重载完成的未来",
      * 加载遮罩只有在它正常完成后才会被撤掉。卡死时这个字段的取值就是判据。
      */

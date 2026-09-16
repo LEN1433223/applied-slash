@@ -58,6 +58,17 @@ public class AppliedSlash {
                         output.accept(AppliedSlashAe2.SLASH_BLADE_CELL.get());
                         // 与拔刀剑元件并列的第二个元件(不可堆叠物品存储元件)
                         output.accept(AppliedSlashAe2.UNSTACKABLE_ITEM_CELL.get());
+                        // 5 把充能拔刀剑(出厂即带默认刀身数据 + 满能量)+ 专用充能方块。
+                        //
+                        // 关于类加载:这个 lambda 只有在创造界面构建时才执行,那时 SlashBlade 与 AE2
+                        // 两类前置的类才会被加载 —— 而 displayItems 现在挂在 isAe2Loaded() 分支里注册,
+                        // 且两个前置都已是 required,所以是安全的。**但不要**因此以为可以在 lambda 里
+                        // 随便引用前置类:一旦前置回到 optional,这里的加载时机就是唯一的防线。
+                        for (com.applied.slash.charged.ChargedBladeItem blade
+                                : com.applied.slash.charged.ChargedBladeItems.all()) {
+                            output.accept(com.applied.slash.charged.ChargedBladeFactory.fresh(blade));
+                        }
+                        output.accept(com.applied.slash.charged.block.BladeChargerRegistry.BLADE_CHARGER_ITEM.get());
                     })
                     .build());
 
@@ -81,7 +92,14 @@ public class AppliedSlash {
             LOGGER.warn("未检测到 Applied Energistics 2 (modid \"{}\"),SlashBlade存储元件不会被注册。", AE2_MODID);
         }
 
-        if (!isSlashBladeLoaded()) {
+        // 5 把充能拔刀剑:引用 ItemSlashBlade 的类只能在这里的门卫之后注册(与 AE2 同一个约定)。
+        // 改 required 之后本分支必然为真,但保留结构以免破坏「前置缺席也不 NoClassDefFoundError」。
+        if (isSlashBladeLoaded()) {
+            com.applied.slash.charged.ChargedBladeItems.register(modEventBus);
+            // 游戏总线:第二保证(UpdateAttackEvent 压伤害)+ 断刀双保险 + actionbar 节流。
+            // 方法签名里出现 SlashBladeEvent ⇒ 注册那一刻会加载它,所以必须在这道门卫里。
+            com.applied.slash.charged.ChargedBladeEvents.register();
+        } else {
             LOGGER.warn("未检测到 SlashBlade (modid \"{}\"),存储元件将识别不到任何拔刀剑。", SLASHBLADE_MODID);
         }
 

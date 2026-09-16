@@ -1,0 +1,7 @@
+{
+  "credit": "像素图源码见 tools/textures.gradle 的 chargerBlock(cube_all,单张 16x16 贴图)",
+  "parent": "minecraft:block/cube_all",
+  "textures": {
+    "all": "applied_slash:block/blade_charger"
+  }
+}

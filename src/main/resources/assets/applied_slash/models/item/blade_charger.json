@@ -1,0 +1,4 @@
+{
+  "credit": "verifyResources 会按 registerItem(\"blade_charger\") 找 models/item/blade_charger.json,所以这个文件必须存在(转发到方块模型)",
+  "parent": "applied_slash:block/blade_charger"
+}

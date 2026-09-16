@@ -1,0 +1,34 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "neoforge:conditions": [
+    {
+      "type": "neoforge:mod_loaded",
+      "modid": "ae2"
+    },
+    {
+      "type": "neoforge:mod_loaded",
+      "modid": "slashblade"
+    }
+  ],
+  "pattern": [
+    "PQP",
+    "QBQ",
+    "PQP"
+  ],
+  "key": {
+    "P": {
+      "item": "ae2:calculation_processor"
+    },
+    "Q": {
+      "item": "slashblade:proudsoul_sphere"
+    },
+    "B": {
+      "item": "applied_slash:charged_blade_pulse"
+    }
+  },
+  "result": {
+    "id": "applied_slash:charged_blade_resonance",
+    "count": 1
+  }
+}

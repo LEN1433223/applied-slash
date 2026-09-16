@@ -2,6 +2,7 @@ package com.applied.slash;
 
 import com.applied.slash.cell.SlashBladeCellHandler;
 import com.applied.slash.cell.UnstackableCellHandler;
+import com.applied.slash.charged.block.BladeChargerRegistry;
 
 import appeng.api.client.StorageCellModels;
 import appeng.api.storage.StorageCells;
@@ -39,6 +40,9 @@ public final class AppliedSlashAe2 {
     /** 注册物品;必须在 mod 构造期调用。 */
     public static void register(IEventBus modBus) {
         ITEMS.register(modBus);
+        // 充能方块的四个注册器(方块 / 方块物品 / 方块实体类型 / 菜单类型)。
+        // 它引用了 appeng.*,所以必须留在这个 AE2 门卫之内 —— 保住「AE2 缺席也不 NoClassDefFoundError」。
+        BladeChargerRegistry.register(modBus);
     }
 
     /**

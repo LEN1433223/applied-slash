@@ -32,5 +32,22 @@
   "command.applied_slash.inspect.extract_rejected": "SIMULATE probe rejected (=0): AE2's extraction returns 0 on its first step and does nothing at all -- this is why [clicking the terminal does nothing]",
   "command.applied_slash.inspect.extract_modulate": "MODULATE actual extract = %s",
   "command.applied_slash.inspect.extract_reinsert": "Put back as-is = %s (should equal the previous number; net change is 0)",
-  "command.applied_slash.inspect.error": "Inspector error: %s"
+  "command.applied_slash.inspect.error": "Inspector error: %s",
+
+  "item.applied_slash.charged_blade_pulse": "Charged Blade: Pulse",
+  "item.applied_slash.charged_blade_resonance": "Charged Blade: Resonance",
+  "item.applied_slash.charged_blade_surge": "Charged Blade: Surge",
+  "item.applied_slash.charged_blade_overcharge": "Charged Blade: Overcharge",
+  "item.applied_slash.charged_blade_singularity": "Charged Blade: Singularity",
+  "item.applied_slash.charged_blade.tooltip.energy": "Energy %s / %s",
+  "item.applied_slash.charged_blade.tooltip.empty": "Out of energy: unusable",
+  "item.applied_slash.charged_blade.tooltip.quantize": "Stored in 1/10 steps (rounded down on withdrawal, loses up to %s)",
+
+  "block.applied_slash.blade_charger": "Blade Charger",
+  "container.applied_slash.blade_charger": "Blade Charger",
+  "applied_slash.blade_charger.status.idle": "No blade",
+  "applied_slash.blade_charger.status.charging": "Charging (%s AE per point)",
+  "applied_slash.blade_charger.status.full": "Fully charged",
+  "applied_slash.blade_charger.status.no_ae": "Not enough AE",
+  "applied_slash.charged_blade.no_energy_hint": "Out of energy: cannot attack"
 }
