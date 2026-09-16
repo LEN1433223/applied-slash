@@ -1,0 +1,391 @@
+// ============================================================================
+// 拔刀剑存储元件的贴图生成脚本(像素图"源码"就在这里)
+// ----------------------------------------------------------------------------
+// 生成物已随资源入库,正常构建**不需要**重新生成;
+// 改配色/像素后执行:gradlew generateTextures
+//
+// 三个贴图:
+//   item/slash_blade_cell.png      元件本体层(layer0)。注意:AE2 的物品染色只给
+//                                  tint 索引 1(LED 层)上色,索引 0 返回白色,所以
+//                                  这一层必须是**已经上色**的贴图,不能靠染色。
+//   item/slash_blade_cell_led.png  状态灯层(layer1),白色像素,运行时按 CellState 染色。
+//   block/slash_blade_cell_drive.png  ME 驱动器里渲染单元面的贴图。驱动器模型用的是
+//                                  AE2 的 UV 约定:north 面取 x0..6 / y0..2,
+//                                  up+down 面镜像同一块区域。
+//   item/unstackable_cell.png       「不可堆叠物品存储元件」本体层(layer0)。同样必须是**已经上色**
+//                                  的贴图(AE2 的染色只给 tint 索引 1 上色,本元件没有 LED 层)。
+//                                  驱动器里渲染时暂用同一张贴图(见 AppliedSlashAe2.registerIntegration)。
+//
+// 注:曾经还有 item/blade_view_cell.png(拔刀剑显示元件)—— 该路线已被用户否决,
+// 元件、贴图、字符画都删掉了,generateTextures 不再生成它。
+// ============================================================================
+
+def palette = [
+        '.' : 0x00000000,   // 透明
+        '#' : 0xFF0E0E12,   // 描边(近黑)
+        'b' : 0xFFB9BCC6,   // 外壳亮灰(AE2 单元的高光面板)
+        'k' : 0xFF3A3E48,   // 外壳内窗(深灰)
+        'M' : 0xFF23232B,   // 金属暗(插脚/底衬)
+        'N' : 0xFF2E2E38,   // 底衬浅格(仅用于"未被 UV 采样"的填充区,让原始 PNG 不是一块纯色)
+        'm' : 0xFF6E6E7A,   // 金属亮(插脚触点)
+        'V' : 0xFF2A1E4A,   // 主体暗紫(妖刀底色)
+        'v' : 0xFF4B3A80,   // 主体亮紫
+        'S' : 0xFFD6DCEA,   // 刀身银
+        's' : 0xFF8A90A2,   // 刀身暗部(让刀身有厚度)
+        'H' : 0xFFF4F7FF,   // 刀锋高光
+        'G' : 0xFFCBA13C,   // 鍔(护手)金
+        'g' : 0xFF8A6A20,   // 鍔金暗部
+        'R' : 0xFF7A2E2E,   // 柄卷红棕
+        'r' : 0xFF43191C,   // 柄卷暗部
+        'W' : 0xFFFFFFFF,   // 状态灯(运行时染色)
+]
+
+// 元件本体:AE2 式外壳(顶面板 + 底部金属插脚)+ 主体里斜嵌一把太刀
+// 太刀由下往右上:柄卷(红棕) → 鍔(金) → 刀身(银)+刀锋高光
+def cellBody = [
+        '................',
+        '...##########...',
+        '..#bbbbbbbbbb#..',
+        '..#bkkkkkkkkb#..',
+        '..#bkkkkkkkkb#..',
+        '..#VVVVVVVVsH#..',
+        '..#VVVVVVVSHV#..',
+        '..#VVVVVVSHVV#..',
+        '..#VVVVVSHVVV#..',
+        '..#VVVVSHVVVV#..',
+        '..#VVVGGgVVVV#..',
+        '..#VVRrVVVVVV#..',
+        '..#VrRVVVVVVV#..',
+        '..#mMmMmMmMmM#..',
+        '..############..',
+        '................',
+]
+
+// 状态灯:压在顶面板内窗上的一块 4x2 灯芯 + 1px 近黑边框。
+// 边框的作用有两个:① 游戏里灯芯不管被染成什么颜色,都有个暗框衬托,不会糊在窗口上;
+// ② 白色灯芯 + 透明画布在普通看图器里会显示成"一张白纸",加了暗框就一眼能看出这是图层。
+def cellLed = [
+        '................',
+        '................',
+        '.....######.....',
+        '.....#WWWW#.....',
+        '.....#WWWW#.....',
+        '.....######.....',
+        '................',
+        '................',
+        '................',
+        '................',
+        '................',
+        '................',
+        '................',
+        '................',
+        '................',
+        '................',
+]
+
+// ----------------------------------------------------------------------------
+// 「不可堆叠物品存储元件」本体(item/unstackable_cell.png,16x16,只有本体层,没有 LED 层)
+// 题材:与拔刀剑元件同一套 AE2 式外壳(亮灰顶面板 + 内窗 + 底部金属插脚),
+//   内窗里画**一件**铁砧(与配方材料呼应,且铁砧本身就是不可堆叠物品),
+//   砧下一条短亮条 = "数量仅此一件"的短标记。
+//   —— 与拔刀剑元件的区别只在窗内图案(那盘是斜嵌太刀、底色妖刀紫),外壳与裁切完全一致。
+// 颜色标:`k` 深灰内窗做底,`S`/`s` 银做砧身与暗部,`m` 金属亮点做数量标记。
+// ----------------------------------------------------------------------------
+def unstackableCell = [
+        '................',
+        '...##########...',
+        '..#bbbbbbbbbb#..',
+        '..#bkkkkkkkkb#..',
+        '..#bkkkkkkkkb#..',
+        '..#ksSSSSSSsk#..',
+        '..#kkkkSSkkkk#..',
+        '..#kkkkSSkkkk#..',
+        '..#kkkSSSSkkk#..',
+        '..#kksSSSSskk#..',
+        '..#ksSSSSSSsk#..',
+        '..#kkkmmmkkkk#..',
+        '..#kkkkkkkkkk#..',
+        '..#mMmMmMmMmM#..',
+        '..############..',
+        '................',
+]
+
+// 驱动器里的单元正面。只有 x0..5 / y0..1 这 6x2 会被模型的 UV 采样(约定同 AE2
+// 的 drive/cells/1k_item_cell.json:north uv [0,0,6,2]),所以主题图案必须压在
+// 这 12 个像素里 —— 上行刀身银,下行柄卷红 + 鍔金,两端描边。
+def driveBand = [
+        '#HSSsb#',
+        '#RGGgv#',
+]
+
+// 6x2 之外的区域永远不会被采样(它只是画布),填成深浅交替暗格:
+// 既让原始 PNG 看起来不是"一块纯色",也提示这块是留白而不是忘了画。
+def driveFace = (0..15).collect { int y ->
+    def sb = new StringBuilder()
+    for (int x = 0; x < 16; x++) {
+        if (y < 2 && x < 6) {
+            sb.append(driveBand[y][x])
+        } else {
+            sb.append(((((x >> 1) + (y >> 1)) & 1) == 0) ? 'M' : 'N')
+        }
+    }
+    sb.toString()
+}
+
+def writePng = { File target, List<String> rows ->
+    if (rows.size() != 16 || rows.any { it.length() != 16 }) {
+        throw new GradleException("贴图 ${target.name} 必须是 16x16 像素图,每行 16 字符")
+    }
+    def image = new java.awt.image.BufferedImage(16, 16, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    rows.eachWithIndex { String row, int y ->
+        row.eachWithIndex { String ch, int x ->
+            if (!palette.containsKey(ch)) {
+                throw new GradleException("贴图 ${target.name} 第 ${y} 行第 ${x} 列用了未定义色标 '${ch}'")
+            }
+            image.setRGB(x, y, (int) palette[ch])
+        }
+    }
+    target.parentFile.mkdirs()
+    if (!javax.imageio.ImageIO.write(image, 'png', target)) {
+        throw new GradleException("写 PNG 失败: ${target}")
+    }
+    // 注意:执行期不能用 logger(配置缓存会拒绝引用 Gradle 模型对象),用 println
+    println("texture written: ${target} (${target.length()} bytes)")
+}
+
+tasks.register('generateTextures') {
+    group = 'textures'
+    description = '从本脚本内的像素图生成模组贴图 PNG'
+    // 任务体里用了带 Java AWT 的脚本闭包,配置缓存无法序列化 → 显式声明不兼容
+    notCompatibleWithConfigurationCache('像素图生成使用脚本内闭包与 AWT')
+    def assetRoot = layout.projectDirectory.dir('src/main/resources/assets/applied_slash/textures')
+    def importedArt = layout.projectDirectory.file('art/slash_blade_cell_source.png').asFile
+    doLast {
+        // 本体层如果改用了外部导入图(art/slash_blade_cell_source.png,见 tools/art-import.gradle),
+        // 这里就不再覆盖它 —— 否则一次 generateTextures 会把导入的美术打回手绘版。
+        if (importedArt.isFile()) {
+            println("skip: 本体层当前来自导入图 ${importedArt.name},如需恢复手绘版请先删除该文件(或执行 gradlew importArt 覆盖)")
+        } else {
+            writePng(assetRoot.file('item/slash_blade_cell.png').asFile, cellBody)
+        }
+        writePng(assetRoot.file('item/slash_blade_cell_led.png').asFile, cellLed)
+        writePng(assetRoot.file('block/slash_blade_cell_drive.png').asFile, driveFace)
+        // 不可堆叠物品元件的本体层:纯手绘,没有"导入图"这回事,因此无条件写(上面那个守卫只针对本体层 slash_blade_cell)
+        writePng(assetRoot.file('item/unstackable_cell.png').asFile, unstackableCell)
+    }
+}
+
+/** 透明像素画成棋盘格 —— 否则在白色底的图片查看器里,透明会被误读成"贴图是白的"。 */
+def checkerUnder = { int argb, int x, int y ->
+    if (((argb >>> 24) & 0xFF) == 0) {
+        return ((((x >> 1) + (y >> 1)) & 1) == 0) ? 0xFF3A3A3A : 0xFF5A5A5A
+    }
+    return argb
+}
+
+/** 放大预览:16x16 太小没法肉眼验收,这里输出 8 倍最近邻放大图到 build/texture-preview。 */
+def writePreview = { File target, List<String> rows, int scale ->
+    def image = new java.awt.image.BufferedImage(16 * scale, 16 * scale, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    rows.eachWithIndex { String row, int y ->
+        row.eachWithIndex { String ch, int x ->
+            int argb = checkerUnder((int) palette[ch], x, y)
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    image.setRGB(x * scale + dx, y * scale + dy, argb)
+                }
+            }
+        }
+    }
+    target.parentFile.mkdirs()
+    javax.imageio.ImageIO.write(image, 'png', target)
+    println("preview written: ${target}")
+}
+
+/**
+ * Minecraft 的物品层染色是**逐通道乘法**(不是直接替换颜色):
+ * 染色后的像素 = 贴图像素 × 状态色 / 255,alpha 不变。
+ * 这一点很关键 —— 灯芯的暗边框乘以任何颜色仍然是暗的,所以暗框不会跟着状态变色。
+ * (早期版本这里直接拿状态色覆盖非透明像素,合成图会显示成"一大块纯色",与实际渲染不符。)
+ */
+def tintMul = { int argb, int tintRgb ->
+    int a = (argb >>> 24) & 0xFF
+    int r = (((argb >> 16) & 0xFF) * ((tintRgb >> 16) & 0xFF)) / 255
+    int g = (((argb >> 8) & 0xFF) * ((tintRgb >> 8) & 0xFF)) / 255
+    int b = ((argb & 0xFF) * (tintRgb & 0xFF)) / 255
+    return (a << 24) | (r << 16) | (g << 8) | b
+}
+
+/** 合成预览:本体 + 被染色的状态灯,用于看"实际游戏里长什么样"(灯色按 CellState 语义取样)。 */
+def writeCompositePreview = { File target, List<String> body, List<String> led, int tintRgb, int scale ->
+    def image = new java.awt.image.BufferedImage(16 * scale, 16 * scale, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    body.eachWithIndex { String row, int y ->
+        row.eachWithIndex { String ch, int x ->
+            int argb = checkerUnder((int) palette[ch], x, y)
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    image.setRGB(x * scale + dx, y * scale + dy, argb)
+                }
+            }
+        }
+    }
+    led.eachWithIndex { String row, int y ->
+        row.eachWithIndex { String ch, int x ->
+            if (ch == '.') {
+                return
+            }
+            int argb = tintMul((int) palette[ch], tintRgb)
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    image.setRGB(x * scale + dx, y * scale + dy, argb)
+                }
+            }
+        }
+    }
+    target.parentFile.mkdirs()
+    javax.imageio.ImageIO.write(image, 'png', target)
+    println("preview written: ${target}")
+}
+
+/** 把被 UV 采样的那一小块单独放大 —— 6x2 像素不放大根本没法验收。 */
+def writeBandPreview = { File target, List<String> rows, int w, int h, int scale ->
+    def image = new java.awt.image.BufferedImage(w * scale, h * scale, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int argb = (int) palette[rows[y][x] as String]
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    image.setRGB(x * scale + dx, y * scale + dy, argb)
+                }
+            }
+        }
+    }
+    target.parentFile.mkdirs()
+    javax.imageio.ImageIO.write(image, 'png', target)
+    println("preview written: ${target}")
+}
+
+/**
+ * 从**实际贴图文件**读 16x16(本体层可能来自导入图,不再是脚本里的字符图),
+ * 统一按最近邻缩放到 16x16 再放大预览 —— 预览必须反映真正会上游戏的像素。
+ */
+def readBody16 = { File png ->
+    def src = javax.imageio.ImageIO.read(png)
+    if (src == null) { throw new GradleException("读不出贴图: ${png}") }
+    def out = new java.awt.image.BufferedImage(16, 16, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            int sx = (int) (x * src.width / 16.0)
+            int sy = (int) (y * src.height / 16.0)
+            out.setRGB(x, y, src.getRGB(Math.min(sx, src.width - 1), Math.min(sy, src.height - 1)))
+        }
+    }
+    return out
+}
+
+def writePreviewFromPng = { File target, File png, int scale ->
+    def body = readBody16(png)
+    def image = new java.awt.image.BufferedImage(16 * scale, 16 * scale, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            int argb = checkerUnder(body.getRGB(x, y), x, y)
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    image.setRGB(x * scale + dx, y * scale + dy, argb)
+                }
+            }
+        }
+    }
+    target.parentFile.mkdirs()
+    javax.imageio.ImageIO.write(image, 'png', target)
+    println("preview written: ${target}")
+}
+
+/** 合成预览:本体取实际贴图文件 + 被染色的状态灯(逐通道乘法,与游戏一致)。 */
+def writeCompositeFromPng = { File target, File png, List<String> led, int tintRgb, int scale ->
+    def body = readBody16(png)
+    def image = new java.awt.image.BufferedImage(16 * scale, 16 * scale, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            int argb = checkerUnder(body.getRGB(x, y), x, y)
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    image.setRGB(x * scale + dx, y * scale + dy, argb)
+                }
+            }
+        }
+    }
+    led.eachWithIndex { String row, int y ->
+        row.eachWithIndex { String ch, int x ->
+            if (ch == '.') {
+                return
+            }
+            int argb = tintMul((int) palette[ch], tintRgb)
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    image.setRGB(x * scale + dx, y * scale + dy, argb)
+                }
+            }
+        }
+    }
+    target.parentFile.mkdirs()
+    javax.imageio.ImageIO.write(image, 'png', target)
+    println("preview written: ${target}")
+}
+
+tasks.register('texturePreviews') {
+    group = 'textures'
+    description = '输出贴图的 8 倍放大预览(含"本体+染色状态灯"的合成效果、驱动器 6x2 面板放大)'
+    notCompatibleWithConfigurationCache('像素图预览使用脚本内闭包与 AWT')
+    def previewRoot = layout.buildDirectory.dir('texture-preview')
+    def assetRoot = layout.projectDirectory.dir('src/main/resources/assets/applied_slash/textures')
+    def itemModelFile = layout.projectDirectory.file('src/main/resources/assets/applied_slash/models/item/slash_blade_cell.json').asFile
+    doLast {
+        def dir = previewRoot.get().asFile
+        // 本体层一律从实际文件读(source of truth),不再拿脚本里的字符图去凑
+        def bodyPng = assetRoot.file('item/slash_blade_cell.png').asFile
+        writePreviewFromPng(new File(dir, 'slash_blade_cell.png'), bodyPng, 8)
+        writePreview(new File(dir, 'slash_blade_cell_led.png'), cellLed, 8)
+        writePreview(new File(dir, 'slash_blade_cell_drive.png'), driveFace, 8)
+        // 合成预览必须跟着物品模型走:模型里没有 layer1 就说明游戏不会画状态灯,
+        // 这时还叠一层灯上去等于让预览撒谎(上一轮就是这么被误导的)。
+        // 注意要用 JSON 解析而不是字符串匹配 —— 模型里的 credit 说明文字也会提到 layer1。
+        boolean ledInModel = false
+        if (itemModelFile.isFile()) {
+            def parsed = new groovy.json.JsonSlurper().parse(itemModelFile)
+            ledInModel = parsed.textures != null && parsed.textures.layer1 != null
+        }
+        if (ledInModel) {
+            // 合成:空盘(灰白) / 有内容(绿) / 满类型(红)—— 灯色由 CellState.getStateColor() 在运行时决定
+            writeCompositeFromPng(new File(dir, 'composite_empty.png'), bodyPng, cellLed, 0x9E9E9E, 8)
+            writeCompositeFromPng(new File(dir, 'composite_not_empty.png'), bodyPng, cellLed, 0x35C060, 8)
+            writeCompositeFromPng(new File(dir, 'composite_types_full.png'), bodyPng, cellLed, 0xD8443C, 8)
+        } else {
+            // 同时删掉上一轮留下的合成图,否则目录里会残留"游戏并不会那样画"的旧图
+            ['composite_empty.png', 'composite_not_empty.png', 'composite_types_full.png'].each { name ->
+                def stale = new File(dir, name)
+                if (stale.exists() && stale.delete()) {
+                    println("removed stale preview: ${stale}")
+                }
+            }
+            println("note: 物品模型未声明 layer1,不叠加状态灯(与实际渲染保持一致)")
+        }
+        // 驱动器里真正被采样的 6x2(north 面 uv [0,0,6,2]),24 倍放大
+        writeBandPreview(new File(dir, 'drive_face_6x2.png'), driveFace, 6, 2, 24)
+        // 不可堆叠物品元件本体:8 倍预览直接由字符画生成;1 倍预览必须读实际 PNG,
+        // 而该 PNG 只有跑过 generateTextures 才存在 —— 单独执行本任务时跳过而不是直接失败。
+        writePreview(new File(dir, 'unstackable_cell.png'), unstackableCell, 8)
+        def unstackablePng = assetRoot.file('item/unstackable_cell.png').asFile
+        if (unstackablePng.isFile()) {
+            writePreviewFromPng(new File(dir, 'unstackable_cell_1x.png'), unstackablePng, 1)
+        } else {
+            println("note: ${unstackablePng.name} 尚未生成,先执行 gradlew generateTextures")
+        }
+        // 物品栏里的真实尺寸(1 倍),避免"8 倍图好看但实际只有 16px"的误判
+        writePreviewFromPng(new File(dir, 'slash_blade_cell_1x.png'), bodyPng, 1)
+    }
+}
+
+// 贴图重生成后自动刷新预览,避免预览与贴图不一致导致误判
+tasks.named('generateTextures') {
+    finalizedBy('texturePreviews')
+}

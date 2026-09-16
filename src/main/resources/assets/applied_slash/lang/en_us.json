@@ -1,0 +1,36 @@
+{
+  "itemGroup.applied_slash": "Applied Slash",
+
+  "item.applied_slash.slash_blade_cell": "SlashBlade Storage Cell",
+  "item.applied_slash.slash_blade_cell.tooltip.usage": "Stored %s / %s types, %s blades total",
+  "item.applied_slash.slash_blade_cell.tooltip.missing": "Blade data not found in this save (empty)",
+  "item.applied_slash.slash_blade_cell.tooltip.no_slashblade": "SlashBlade is not installed: nothing can be stored",
+
+  "item.applied_slash.unstackable_item_cell": "Unstackable Item Storage Cell",
+  "item.applied_slash.unstackable_item_cell.tooltip.usage": "Stored %s / %s types, %s items total",
+  "item.applied_slash.unstackable_item_cell.tooltip.missing": "Item data not found in this save (empty)",
+
+  "command.applied_slash.testcell.done": "Test cell created: %s blade types / %s blades, took %s ms",
+  "command.applied_slash.testcell.need_player": "Specify a player when running from the console: /appliedslash testcell <count> <player>",
+  "command.applied_slash.testcell.failed": "Could not create the test cell (AE2 or SlashBlade missing?)",
+
+  "command.applied_slash.inspect.need_player": "Must be run by a player from the console: /appliedslash inspect (it reads the main hand)",
+  "command.applied_slash.inspect.hand_empty": "Empty main hand: hold one of this mod's storage cells",
+  "command.applied_slash.inspect.not_cell": "Held item is not one of this mod's storage cells (%s): hold one of this mod's storage cells",
+  "command.applied_slash.inspect.vault_id_none": "vault_id: not assigned (nothing was ever inserted into this cell)",
+  "command.applied_slash.inspect.vault_id_value": "vault_id: %s",
+  "command.applied_slash.inspect.vault_missing": "Vault unavailable / payload lost: this UUID is not found on the world side (copied across saves, rolled back, or not on the server thread)",
+  "command.applied_slash.inspect.vault_stats": "World-side vault: %s types / %s stored",
+  "command.applied_slash.inspect.inventory_null": "StorageCells.getCellInventory returned null: no ICellHandler claimed this cell",
+  "command.applied_slash.inspect.entries": "Network view entries: %s",
+  "command.applied_slash.inspect.entries_empty": "Network view has no entries: the cell really is empty, this is not [visible but not extractable]",
+  "command.applied_slash.inspect.key_line": "First key: %s (class %s, is AEItemKey=%s)",
+  "command.applied_slash.inspect.key_restore": "Key restored to an item stack: isEmpty=%s / item id=%s / components=%s (an empty stack means [client shows it, you cannot take it out])",
+  "command.applied_slash.inspect.key_normalize": "Key after normalization: %s (same as the listed key=%s)",
+  "command.applied_slash.inspect.key_not_item": "First key is not an AEItemKey (class %s); skipping restore and extract probe",
+  "command.applied_slash.inspect.extract_simulate": "SIMULATE extract probe (1 item) = %s",
+  "command.applied_slash.inspect.extract_rejected": "SIMULATE probe rejected (=0): AE2's extraction returns 0 on its first step and does nothing at all -- this is why [clicking the terminal does nothing]",
+  "command.applied_slash.inspect.extract_modulate": "MODULATE actual extract = %s",
+  "command.applied_slash.inspect.extract_reinsert": "Put back as-is = %s (should equal the previous number; net change is 0)",
+  "command.applied_slash.inspect.error": "Inspector error: %s"
+}

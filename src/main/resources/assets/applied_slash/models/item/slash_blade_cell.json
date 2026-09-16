@@ -1,0 +1,7 @@
+{
+  "credit": "只使用 layer0(本体层)。原先的 layer1 LED 状态灯层(黑边框+灯芯)已按需求移除 —— 它在导入的美术上显得多余。若要恢复状态灯:在 textures 里加回 \"layer1\": \"applied_slash:item/slash_blade_cell_led\",并在 tools/textures.gradle 的 cellLed 里画灯芯(注意灯芯必须是纯白,会被 CellState 颜色乘法染色;暗边框乘任何颜色仍是暗的)。",
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "applied_slash:item/slash_blade_cell"
+  }
+}

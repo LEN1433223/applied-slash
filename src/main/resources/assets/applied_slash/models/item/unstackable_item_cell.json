@@ -1,0 +1,7 @@
+{
+  "credit": "只使用 layer0(本体层),与拔刀剑元件同样不叠 LED 层。像素图源码见 tools/textures.gradle 的 unstackableCell 字符画(执行 gradlew generateTextures 生成 item/unstackable_cell.png)。",
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "applied_slash:item/unstackable_cell"
+  }
+}

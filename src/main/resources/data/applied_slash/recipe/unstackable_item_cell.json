@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "neoforge:conditions": [
+    {
+      "type": "neoforge:mod_loaded",
+      "modid": "ae2"
+    }
+  ],
+  "pattern": [
+    "PSP",
+    "SHS",
+    "PSP"
+  ],
+  "key": {
+    "P": {
+      "item": "ae2:calculation_processor"
+    },
+    "S": {
+      "item": "minecraft:anvil"
+    },
+    "H": {
+      "item": "ae2:item_cell_housing"
+    }
+  },
+  "result": {
+    "id": "applied_slash:unstackable_item_cell",
+    "count": 1
+  }
+}

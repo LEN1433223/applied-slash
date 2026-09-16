@@ -1,0 +1,203 @@
+// ============================================================================
+// 资源链自检:gradlew verifyResources
+// ----------------------------------------------------------------------------
+// 逐个检查"代码 → 模型 → 贴图"这条链,任何一环断了都直接点名,而不是等到游戏里
+// 看到紫黑格子才发现。检查项:
+//   1) 物品模型路径与注册的物品 id 一致(models/item/<id>.json 存在)
+//   2) 代码里用字符串拼出来的模型路径(如 block/slash_blade_cell)确实有对应文件
+//   3) 每个模型 JSON 可解析;parent 链能追到原版/本模组
+//   4) 每个 textures 引用都能找到对应 PNG(本模组 / 原版 assets / AE2)
+//   5) 本模组的 PNG 头部合法且为 16x16、8bit、非交错(与 AE2 自家贴图同格式)
+// ============================================================================
+
+def resourceAssets = file('src/main/resources/assets')
+def modId = 'applied_slash'
+
+tasks.register('verifyResources') {
+    group = 'verification'
+    description = '校验模组资源链(模型/父链/贴图/PNG 格式),断链直接点名'
+    notCompatibleWithConfigurationCache('资源校验使用脚本内闭包')
+
+    doLast {
+        def problems = []
+        def notes = []
+
+        // ---- 依赖的 jar:原版 assets 与 AE2(用于解析跨模组引用) ----
+        def vanillaJars = fileTree(dir: 'build/moddev/artifacts', include: ['*client-extra*.jar']).files
+        def vanillaJar = vanillaJars.isEmpty() ? null : vanillaJars.first()
+        def ae2Jar = file('libs/ae2-19.2.17.jar')
+        notes << "原版 assets jar: ${vanillaJar ?: '未找到(先跑一次 build 生成 createMinecraftArtifacts)'}"
+        def jars = [vanillaJar, ae2Jar].findAll { it != null && it.exists() }
+        def jarEntryExists = { String entry ->
+            jars.any { j ->
+                def z = new java.util.zip.ZipFile(j)
+                try {
+                    return z.getEntry(entry) != null
+                } finally {
+                    z.close()
+                }
+            }
+        }
+        def readJarEntry = { String entry ->
+            for (def j : jars) {
+                def z = new java.util.zip.ZipFile(j)
+                try {
+                    def e = z.getEntry(entry)
+                    if (e != null) {
+                        return z.getInputStream(e).getText('UTF-8')
+                    }
+                } finally {
+                    z.close()
+                }
+            }
+            return null
+        }
+
+        // ---- 收集本模组资源 ----
+        def modelsDir = new File(resourceAssets, "$modId/models")
+        def texturesDir = new File(resourceAssets, "$modId/textures")
+        def json = new groovy.json.JsonSlurper()
+
+        def resolveModel = { String ref ->
+            def parts = ref.split(':', 2)
+            def ns = parts.length == 2 ? parts[0] : 'minecraft'
+            def path = parts.length == 2 ? parts[1] : parts[0]
+            if (ns == modId) {
+                return new File(modelsDir, "${path}.json")
+            }
+            // 非本模组:返回 jar 内条目路径(不带前缀,调用方按类型区分)
+            return "assets/${ns}/models/${path}.json"
+        }
+        def modelTextOf = { ref ->
+            def resolved = resolveModel(ref)
+            if (resolved instanceof File) {
+                return resolved.exists() ? resolved.getText('UTF-8') : null
+            }
+            return readJarEntry(resolved as String)
+        }
+        def textureExists = { String ref ->
+            def parts = ref.split(':', 2)
+            def ns = parts.length == 2 ? parts[0] : 'minecraft'
+            def path = parts.length == 2 ? parts[1] : parts[0]
+            if (ns == modId) {
+                return new File(texturesDir, "${path}.png").exists()
+            }
+            return jarEntryExists("assets/${ns}/textures/${path}.png")
+        }
+
+        // ---- 1) 物品模型路径必须与注册的物品 id 一致 ----
+        def registeredItems = []
+        new File('src/main/java').eachFileRecurse { f ->
+            if (f.name.endsWith('.java')) {
+                def src = f.getText('UTF-8')
+                def m = src =~ /registerItem\(\s*"([a-z0-9_]+)"/
+                m.each { registeredItems << it[1] }
+            }
+        }
+        if (registeredItems.isEmpty()) {
+            problems << '没找到任何 registerItem("..."),物品注册可能被改名了'
+        }
+        registeredItems.each { id ->
+            def model = new File(modelsDir, "item/${id}.json")
+            if (!model.exists()) {
+                problems << "物品 ${modId}:${id} 缺少模型文件 models/item/${id}.json"
+            } else {
+                notes << "物品模型 OK: item/${id}.json"
+            }
+        }
+
+        // ---- 2) 代码里拼出来的 block 模型路径必须有文件 ----
+        new File('src/main/java').eachFileRecurse { f ->
+            if (f.name.endsWith('.java')) {
+                def src = f.getText('UTF-8')
+                def m = src =~ /":(block\/[a-z0-9_\/]+)"/
+                m.each { hit ->
+                    def p = hit[1]
+                    if (!new File(modelsDir, "${p}.json").exists()) {
+                        problems << "代码引用了不存在的模型 ${modId}:${p}(缺 models/${p}.json)"
+                    } else {
+                        notes << "代码引用的模型 OK: ${p}"
+                    }
+                }
+            }
+        }
+
+        // ---- 3)+4) 逐个模型:JSON 可解析、父链可达、贴图可达 ----
+        // 递归闭包必须先声明再赋值,否则闭包体内解析到的是 task 而不是自己
+        def checkModel
+        checkModel = { String ref, Set visited ->
+            if (!visited.add(ref)) {
+                return
+            }
+            // builtin/* 是原版内置虚拟模型(由代码提供,没有 JSON 文件),追到这里即止
+            if (ref == 'builtin/generated' || ref.startsWith('minecraft:builtin/') || ref.startsWith('builtin/')) {
+                notes << "内置模型(无需文件): ${ref}"
+                return
+            }
+            def text = modelTextOf(ref)
+            if (text == null) {
+                problems << "模型不可达: ${ref}"
+                return
+            }
+            def obj
+            try {
+                obj = json.parseText(text)
+            } catch (Exception e) {
+                problems << "模型 JSON 解析失败: ${ref} -> ${e.message}"
+                return
+            }
+            obj.textures?.each { k, v ->
+                if (v instanceof String && !v.startsWith('#')) {
+                    if (!textureExists(v)) {
+                        problems << "模型 ${ref} 的贴图 ${k} 找不到: ${v}"
+                    }
+                }
+            }
+            if (obj.parent) {
+                checkModel(obj.parent as String, visited)
+            }
+        }
+
+        def ourModels = []
+        modelsDir.eachFileRecurse { f -> if (f.name.endsWith('.json')) { ourModels << f } }
+        ourModels.each { f ->
+            def rel = f.parentFile.name + '/' + f.name.replace('.json', '')
+            checkModel("${modId}:${rel}", [] as Set)
+        }
+        notes << "已检查本模组模型 ${ourModels.size()} 个"
+
+        // ---- 5) PNG 头部 ----
+        def pngs = []
+        texturesDir.eachFileRecurse { f -> if (f.name.endsWith('.png')) { pngs << f } }
+        pngs.each { f ->
+            def b = f.bytes
+            def sigOk = b.length > 33 &&
+                    (b[0] & 0xFF) == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47
+            if (!sigOk) {
+                problems << "PNG 头部非法: ${f.name}"
+                return
+            }
+            // IHDR 数据:宽度在 16..19,高度在 20..23,均为 4 字节大端
+            int w = ((b[16] & 0xFF) << 24) | ((b[17] & 0xFF) << 16) | ((b[18] & 0xFF) << 8) | (b[19] & 0xFF)
+            int h = ((b[20] & 0xFF) << 24) | ((b[21] & 0xFF) << 16) | ((b[22] & 0xFF) << 8) | (b[23] & 0xFF)
+            int bitDepth = b[24] & 0xFF
+            int colorType = b[25] & 0xFF
+            int interlace = b[28] & 0xFF
+            if (w != 16 || h != 16) {
+                problems << "PNG 尺寸不是 16x16: ${f.name} -> ${w}x${h}"
+            }
+            if (bitDepth != 8 || interlace != 0) {
+                problems << "PNG 格式不常规: ${f.name} bitDepth=${bitDepth} colorType=${colorType} interlace=${interlace}"
+            }
+            notes << "PNG OK: ${f.name} 16x16/8bit/colorType=${colorType}/非交错"
+        }
+
+        println '===== verifyResources ====='
+        notes.each { println "  [OK]   ${it}" }
+        problems.each { println "  [FAIL] ${it}" }
+        if (problems) {
+            throw new GradleException("资源链有 ${problems.size()} 处问题,见上方 [FAIL]")
+        }
+        println "  资源链自检通过(${notes.size()} 项)"
+    }
+}

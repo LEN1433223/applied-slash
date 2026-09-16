@@ -1,0 +1,25 @@
+{
+  "credit": "像素图源码见 tools/textures.gradle;UV 分区沿用 AE2 驱动器单元的约定",
+  "ambientocclusion": false,
+  "textures": {
+    "particle": "applied_slash:block/slash_blade_cell_drive",
+    "cell": "applied_slash:block/slash_blade_cell_drive"
+  },
+  "elements": [
+    {
+      "name": "Cell Backdrop",
+      "from": [0, 0, 0],
+      "to": [6, 2, 2],
+      "rotation": { "angle": 0, "axis": "y", "origin": [9, 8, 8] },
+      "faces": {
+        "north": {
+          "uv": [0, 0, 6, 2],
+          "texture": "#cell",
+          "cullface": "north"
+        },
+        "up": { "uv": [6, 0, 0, 2], "texture": "#cell", "cullface": "north" },
+        "down": { "uv": [6, 0, 0, 2], "texture": "#cell", "cullface": "north" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+### Gradle ###
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/**/build/
+
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/**/out/
+
+.run/
+
+### Eclipse ###
+.apt_generated
+.classpath
+.eclipse/
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/**/bin/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### Minecraft Modding ###
+run/
+!**/src/**/run/
+**/src/generated/**/.cache/
+repo/
+!**/src/**/repo/
+
+### ===== 本项目专用(Applied Slash)=====
+
+### 第三方依赖 jar:不能提交(版权 + 体积)
+### AE2 / GuideME / SlashBlade / ExtendedAE / Glodium 等,使用者请从各自官方渠道获取,见 README 兼容性表
+libs/*.jar
+
+### 贴图源图:单张 2–3 MB。要留在仓库就走 Git LFS;不上传则删掉本行
+art/*.png
+
+### 本机工作用的素材暂存目录(不属于项目)
+贴图/
+
+### 本机日志与截图(通常在 run/ 下,这里再兜一层)
+*.log
+*.log.gz
+logs-backup-*/
+screenshots/
+
+### 编辑器/系统临时文件
+*.bak
+*.tmp
+*.orig
+*.rej
+Thumbs.db
+

@@ -1,0 +1,145 @@
+// ============================================================================
+// 外部大图 → 16x16 物品贴图 的导入器
+// ----------------------------------------------------------------------------
+// 用途:把 AI 出的大图(例如 2208x2080 的像素画放大图)转成模组能用的 16x16 贴图。
+// 直接丢弃式缩放会把边缘糊掉,所以这里做的是:
+//   1) 先按 alpha 阈值求出实体包围盒,去掉四周空白(否则内容会被挤小);
+//   2) 在包围盒内按 16x16 分块做 **alpha 加权面积平均** —— 对"每格约 110 像素"
+//      的放大像素画来说,等于每格取一次原色,得到的是干净的像素图而不是糊图;
+//   3) 输出 16x16 / 8bit RGBA / 非交错 PNG,和手绘贴图完全同规格;
+//   4) 顺手写一张 8 倍放大预览(透明处补棋盘格),避免"白底看图器把透明当白"的老问题。
+//
+// 源图存档在 art/,保证任何时候都能重现这一步(不要只留 build 产物)。
+//
+// 用法:gradlew importArt             (用默认源图 art/slash_blade_cell_source.png)
+//       gradlew importArt -PartSource="D:\path\to\big.png"
+//       gradlew importArt -PartTarget=led   (导入到 LED 层,一般不需要)
+// ============================================================================
+
+def artRoot = layout.projectDirectory.dir('art')
+def defaultSource = artRoot.file('slash_blade_cell_source.png').asFile
+// 属性在配置期用 provider 取好:执行期再调 project.property 会和配置缓存打架
+def artSourceProperty = providers.gradleProperty('artSource')
+def artTargetProperty = providers.gradleProperty('artTarget')
+def importTargets = [
+        body: 'src/main/resources/assets/applied_slash/textures/item/slash_blade_cell.png',
+        led : 'src/main/resources/assets/applied_slash/textures/item/slash_blade_cell_led.png',
+        unstackable: 'src/main/resources/assets/applied_slash/textures/item/unstackable_cell.png',
+]
+
+tasks.register('importArt') {
+    group = 'textures'
+    description = '把 art/ 下的高清源图转换成 16x16 物品贴图(alpha 加权面积平均)'
+    notCompatibleWithConfigurationCache('图像处理使用脚本内闭包与 AWT')
+    doLast {
+        def sourcePath = artSourceProperty.getOrElse(defaultSource.absolutePath)
+        def sourceFile = new File(sourcePath)
+        if (!sourceFile.isFile()) {
+            throw new GradleException("找不到源图: ${sourceFile.absolutePath}")
+        }
+
+        def targetKey = artTargetProperty.getOrElse('body')
+        def targetRelative = importTargets[targetKey]
+        if (targetRelative == null) {
+            throw new GradleException("未知的导入目标 '${targetKey}',可选: ${importTargets.keySet()}")
+        }
+
+        def source = javax.imageio.ImageIO.read(sourceFile)
+        if (source == null) {
+            throw new GradleException("无法解码源图: ${sourceFile.absolutePath}")
+        }
+        println "源图: ${sourceFile.name} ${source.width}x${source.height}"
+
+        // ---- 1. alpha 包围盒 ----
+        final int alphaThreshold = 24
+        int minX = source.width
+        int minY = source.height
+        int maxX = -1
+        int maxY = -1
+        for (int y = 0; y < source.height; y++) {
+            for (int x = 0; x < source.width; x++) {
+                if (((source.getRGB(x, y) >>> 24) & 0xFF) > alphaThreshold) {
+                    if (x < minX) { minX = x }
+                    if (x > maxX) { maxX = x }
+                    if (y < minY) { minY = y }
+                    if (y > maxY) { maxY = y }
+                }
+            }
+        }
+        if (maxX < minX || maxY < minY) {
+            throw new GradleException("源图里没有任何不透明像素")
+        }
+        int boxWidth = maxX - minX + 1
+        int boxHeight = maxY - minY + 1
+        println "实体包围盒: x ${minX}..${maxX} (${boxWidth})  y ${minY}..${maxY} (${boxHeight})"
+
+        // ---- 2. alpha 加权面积平均到 16x16 ----
+        final int size = 16
+        def image = new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        for (int cellY = 0; cellY < size; cellY++) {
+            int y0 = minY + (int) Math.round(cellY * boxHeight / (double) size)
+            int y1 = minY + (int) Math.round((cellY + 1) * boxHeight / (double) size)
+            for (int cellX = 0; cellX < size; cellX++) {
+                int x0 = minX + (int) Math.round(cellX * boxWidth / (double) size)
+                int x1 = minX + (int) Math.round((cellX + 1) * boxWidth / (double) size)
+                double weightSum = 0.0
+                double rSum = 0.0
+                double gSum = 0.0
+                double bSum = 0.0
+                int count = 0
+                for (int y = y0; y < y1; y++) {
+                    for (int x = x0; x < x1; x++) {
+                        int argb = source.getRGB(x, y)
+                        int alpha = (argb >>> 24) & 0xFF
+                        count++
+                        if (alpha <= alphaThreshold) {
+                            continue
+                        }
+                        double weight = alpha / 255.0
+                        weightSum += weight
+                        rSum += ((argb >> 16) & 0xFF) * weight
+                        gSum += ((argb >> 8) & 0xFF) * weight
+                        bSum += (argb & 0xFF) * weight
+                    }
+                }
+                if (count == 0 || weightSum / count < 0.35) {
+                    image.setRGB(cellX, cellY, 0x00000000)   // 覆盖率太低 → 透明,保住轮廓
+                    continue
+                }
+                int r = (int) Math.round(rSum / weightSum)
+                int g = (int) Math.round(gSum / weightSum)
+                int b = (int) Math.round(bSum / weightSum)
+                // 覆盖度映射回 alpha:半覆盖的格子保留半透明,像素画边缘才不会出现硬白边
+                int outAlpha = (int) Math.round(Math.min(1.0, weightSum / count * 1.6) * 255)
+                image.setRGB(cellX, cellY, (outAlpha << 24) | (r << 16) | (g << 8) | b)
+            }
+        }
+
+        def target = layout.projectDirectory.file(targetRelative).asFile
+        target.parentFile.mkdirs()
+        if (!javax.imageio.ImageIO.write(image, 'png', target)) {
+            throw new GradleException("写 PNG 失败: ${target}")
+        }
+        println "贴图已导入: ${target} (${target.length()} bytes)"
+
+        // ---- 3. 8 倍预览(透明处棋盘格) ----
+        def preview = new java.awt.image.BufferedImage(size * 8, size * 8, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                int argb = image.getRGB(x, y)
+                if (((argb >>> 24) & 0xFF) == 0) {
+                    argb = ((((x >> 1) + (y >> 1)) & 1) == 0) ? 0xFF3A3A3A : 0xFF5A5A5A
+                }
+                for (int dy = 0; dy < 8; dy++) {
+                    for (int dx = 0; dx < 8; dx++) {
+                        preview.setRGB(x * 8 + dx, y * 8 + dy, argb)
+                    }
+                }
+            }
+        }
+        def previewFile = layout.buildDirectory.file("texture-preview/imported_${targetKey}.png").get().asFile
+        previewFile.parentFile.mkdirs()
+        javax.imageio.ImageIO.write(preview, 'png', previewFile)
+        println "预览已写出: ${previewFile}"
+    }
+}

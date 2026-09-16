@@ -1,0 +1,36 @@
+{
+  "itemGroup.applied_slash": "应用能源 · 拔刀剑",
+
+  "item.applied_slash.slash_blade_cell": "SlashBlade存储元件",
+  "item.applied_slash.slash_blade_cell.tooltip.usage": "已存储 %s / %s 种,合计 %s 把",
+  "item.applied_slash.slash_blade_cell.tooltip.missing": "本存档内找不到刀身数据(视为空盘)",
+  "item.applied_slash.slash_blade_cell.tooltip.no_slashblade": "未检测到拔刀剑本体,无法存储任何物品",
+
+  "item.applied_slash.unstackable_item_cell": "不可堆叠物品存储元件",
+  "item.applied_slash.unstackable_item_cell.tooltip.usage": "已存储 %s / %s 种,合计 %s 件",
+  "item.applied_slash.unstackable_item_cell.tooltip.missing": "本存档内找不到物品数据(视为空盘)",
+
+  "command.applied_slash.testcell.done": "已生成测试元件:类型 %s 个 / 共 %s 把,耗时 %s ms",
+  "command.applied_slash.testcell.need_player": "从控制台执行时必须指定玩家:/appliedslash testcell <数量> <玩家>",
+  "command.applied_slash.testcell.failed": "无法生成测试元件(缺少 AE2 或拔刀剑?)",
+
+  "command.applied_slash.inspect.need_player": "从控制台执行时必须由玩家执行:/appliedslash inspect(本命令读玩家主手)",
+  "command.applied_slash.inspect.hand_empty": "主手没有物品:请手持本模组的存储元件",
+  "command.applied_slash.inspect.not_cell": "手持的不是本模组的存储元件(%s):请手持本模组的存储元件",
+  "command.applied_slash.inspect.vault_id_none": "vault_id:未分配(这个元件还没入库过任何东西)",
+  "command.applied_slash.inspect.vault_id_value": "vault_id:%s",
+  "command.applied_slash.inspect.vault_missing": "刀库不可用/载荷丢失:该 UUID 在世界侧查不到(跨存档复制、存档回滚,或当前不在服务端线程)",
+  "command.applied_slash.inspect.vault_stats": "世界侧刀库:类型 %s 个 / 合计 %s 件",
+  "command.applied_slash.inspect.inventory_null": "StorageCells.getCellInventory 返回 null:元件没有被 ICellHandler 接管",
+  "command.applied_slash.inspect.entries": "网络视图条目数:%s",
+  "command.applied_slash.inspect.entries_empty": "网络视图里没有任何条目:这个元件真的是空的,不是【看得见取不出】",
+  "command.applied_slash.inspect.key_line": "第一个键:%s(类 %s,是 AEItemKey=%s)",
+  "command.applied_slash.inspect.key_restore": "该键还原成物品栈:isEmpty=%s / 物品 id=%s / 组件数=%s(空栈即【终端看得见、却取不出东西】)",
+  "command.applied_slash.inspect.key_normalize": "该键规范化后:%s(与列出的键相同=%s)",
+  "command.applied_slash.inspect.key_not_item": "第一个键不是 AEItemKey(类 %s),跳过还原与取出探测",
+  "command.applied_slash.inspect.extract_simulate": "SIMULATE 取出探测(1 件)= %s",
+  "command.applied_slash.inspect.extract_rejected": "SIMULATE 探测即被拒(=0):AE2 取出的第一步就返回 0,于是什么都不做 —— 这正是【终端点了没反应】的成因",
+  "command.applied_slash.inspect.extract_modulate": "MODULATE 实际取出 = %s",
+  "command.applied_slash.inspect.extract_reinsert": "原样放回 = %s(应等于上一个数字,净改动为 0)",
+  "command.applied_slash.inspect.error": "诊断过程异常:%s"
+}
