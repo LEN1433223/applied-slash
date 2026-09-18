@@ -42,55 +42,6 @@
 - **Strips nothing**: a tool's durability, enchantments and custom name *are* its identity. Not a single byte is removed
   ⇒ every differently-worn tool occupies one type slot, so `unstackableMaxTypes` is the real capacity limit
 
----
-
-## Lili (new in 1.3.0)
-
-"Lili" is a **datapack blade**, not a custom item class: the item is Resharped's own `slashblade:slashblade`, and the blade is defined in a datapack file.
-
-* Definition file: `src/main/resources/data/applied_slash/slashblade/named_blades/lili.json`, `name = applied_slash:lili` ⇒ lang key `item.applied_slash.lili` (Chinese 「莉莉」, English **"Lili"**);
-* It is in **this mod's creative tab**, next to the two cells and the charger;
-* **Displayed damage 14.13** (`attack_base = 14.13`), `max_damage = 100`;
-* **SA = Judgement Cut** (`slash_art = slashblade:judgement_cut`, SlashBlade's own art), **SE = Love and Bonds** (`special_effects = [applied_slash:inventory_transfer]`), **no enchantments** (`enchantments = []`), `sword_type = []` (no enchantment glint).
-
-### Art attribution
-
-Lili's model and texture **fully reuse Murasame** (Slashblade-Murasame):
-
-* Source repository: <https://github.com/sangeeeee/Slashblade-Murasame> (`murasamemaru.obj` / `murasamemaru.png`);
-* License **MIT**, Copyright (c) 2025 **CeliaClaire**;
-* The byte-for-byte copies, their original paths and the full licence text are in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) at the repository root.
-
----
-
-## Blade Charger — `applied_slash:blade_charger`
-
-The charger **accepts any SlashBlade** — Lili, Resharped's own blades, blades from other addons — and charges it with AE. The stored energy lives in **this mod's own item component**, `applied_slash:blade_energy`.
-
-> That energy currently has **no consumer** (no gameplay reads it). It is a deliberate "useful later" hook.
-
-* A block that attaches to the **ME network**: it has its own internal energy buffer and **actively draws from the ME network** (via AE2's generic grid path, `extractAEPower`) to charge the blade in its slot;
-* Per-blade energy cap: `chargerMaxEnergy` (**default 800**);
-* **Self-powered**: put a **poppy** in slot 2 and it is burned down over time, feeding KAE straight into the local buffer, so **the charger works without an ME network** (AE per poppy: `chargerPoppyAe`; burn time: `chargerPoppyBurnTicks`);
-* Draw order: **grid → local buffer → fuel**. With a working network not a drop of fuel is burned; the same holds when the blade is full or the buffer is full;
-* Charge rate: `chargerChargePerTick`; idle drain: `chargerIdleDrain` (managed by the AE2 grid node — drawn whenever the node is online).
-
-### Insert quantization: why charged blades don't blow up your cells
-
-When a charged blade is stored in the SlashBlade Storage Cell, its energy is **rounded down into levels** (`bladeEnergyQuantizeLevels`); **full energy is kept exact** (`bladeEnergyQuantizeKeepFull`), which guarantees "store it full, take it out full".
-
-The reason: **the energy value becomes part of the AE2 storage key**, so without quantization every single energy value would be a distinct type. Quantization caps the number of keys a blade can occupy at "levels + 1", suppressing key inflation from energy differences at the source.
-
-### Automated verification evidence
-
-* **GameTests 21/21 pass**: storage-cell semantics plus Lili/charger assertions, with real assertions;
-* `./gradlew build` succeeds and `./gradlew verifyResources` passes **all 22 checks**;
-* Measured performance (headless dedicated server, single cell): `getAvailableStacks` ≈ **0.29 ms** at 2000 types and ≈ **0.96 ms** at 5000 types; a single insert ≈ **4.14 µs**;
-* Version **1.3.0**, artifact `applied_slash-1.3.0.jar`.
-
-> All of the above comes from automated builds / tests / the headless self-test. **Client-side presentation (screens, tooltips, feel, looks) is outside the automated scope** and is for players to verify in game.
-
----
 
 ## Configuration (`config/applied_slash-common.toml`)
 
