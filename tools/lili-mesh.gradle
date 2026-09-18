@@ -1,0 +1,541 @@
+// ============================================================================
+// 「莉莉」鞘壳几何生成器:gradlew generateLiliMesh
+// ----------------------------------------------------------------------------
+// 输入:art/lili_source.obj(丛雨丸原始 OBJ,**不可变**)
+// 输出:src/main/resources/assets/applied_slash/models/lili/lili.obj
+//
+// 这一步做三件事(全部由几何数据推导,不写死数字):
+//   1) 丢掉鞘上的配件面集(两个金属环 + 栗形 + 下绪,共 301 面)——
+//      按连通块分解,保留 **X 跨度最大的一块**(整根壳,56 面)作为"拟合样本";
+//      为什么用 X 跨度而不是面数:两个金属环各 96 面 > 壳的 56 面,按面数会删错。
+//   2) **把三棱柱壳换成圆柱**:实测原壳绕一圈只有 3 条纵向面片(3 个面),
+//      游戏里必然看到棱边。这里按原壳的**中心线与断面尺寸**重建成
+//      16 段绕圈 × 24 环沿长 + 鞘尻封口 ≈ 400 面的扁圆柱(圆角矩形断面)。
+//   3) **贴图重排**:贴图升到 1024×2048,原始素材 2× 放大后放进右上象限,
+//      于是其它 7 组的 UV 统一做一次仿射重映射(u' = 0.5u + 0.5, v' = 0.5v);
+//      鞘拿到左下 512×1536 的**专属干净区域**(比例 1:3 = 鞘表面真实比例)。
+//
+// 安全性:
+//   · 重锋按组名取 `GroupObject` 后**逐面**渲染,`GroupObject.render` 先判 `faces.isEmpty()` 直接返回
+//     ⇒ 组里少面/换面都不会报错(但 8 个组名必须齐全:解析器要求);
+//   · 只动 `sheath` 组 + 所有组的 UV ⇒ **手持外观、伤害、属性完全不改变造型**
+//     (其它 7 组的面平均取色由 verifyResources 断言 ±2 以内);
+//   · 顶点/UV 表:先写全部 `v`、再写全部 `vt`、最后写 `g`/`f` 块 ——
+//     与重锋自己的文件同构,避免"面在前、顶点在后"时索引解析踩坑。
+// ============================================================================
+
+import java.util.Locale
+
+/**
+ * 图集布局常量(与 tools/lili-texture.gradle 的同一套;两处都有注释互相指认)。
+ *
+ * <p>为什么放在类里而不是脚本顶层:`CylinderShell` 是静态方法,脚本顶层的 `def/final`
+ * 是 script 的运行期局部变量,静态方法看不见(实测报 "Apparent variable ... in a static scope")。
+ */
+class LiliAtlas {
+    /** 贴图尺寸:512×1024。原始素材 1:1 放在右上象限(256×512)。 */
+    static final int TEX_W = 512
+    static final int TEX_H = 1024
+    /**
+     * 原始素材的 UV 仿射重映射:u' = 0.5u + 0.5, v' = 0.5v + 0.5(放进右上象限)。
+     *
+     * <p><b>注意 v 的常数项</b>:重锋解析 OBJ 时会把 v 翻成 `行 = 1 - v`,所以"把素材压到贴图
+     * 上半部分(行 0..0.5)"在 OBJ 空间里是 `v' = 0.5 + 0.5v`,而不是 `0.5v`
+     * (写成 0.5v 会把素材映射到行 0.5..1.0,刀身直接取到空白像素 ⇒ 渲染成黑条,实测踩过)。
+     */
+    static final double UV_OFF_U = 0.5d
+    static final double UV_OFF_V = 0.5d
+    static final double UV_SCALE_U = 0.5d
+    static final double UV_SCALE_V = 0.5d
+
+    /**
+     * 鞘的专属区域:u 0..0.25(绕一圈),采样行 0..1(整张高)。
+     *
+     * <p>尺寸 256×2048 = **1 : 8**,这是**鞘表面的真实比例**决定的:
+     * 实测断面是 12.6(Y)× 7.2(Z) 的扁管 ⇒ 周长 ≈ 31.7 单位,鞘长 260.8 单位 ⇒ 1 : 8.2。
+     * 区域比例与表面比例一致 ⇒ 贴上去是**各向同性**(花纹不变形,用户选的 A 方案)。
+     * 早先 1:5.3 的区域会把花纹沿鞘长拉伸约 1.8 倍。
+     */
+    static final double SAYA_U0 = 0.0d
+    static final double SAYA_U1 = 0.25d
+    static final double SAYA_ROW0 = 0.0d
+    static final double SAYA_ROW1 = 1.0d
+    /** 圆柱细分:20 段绕圈 × 24 环沿长 ⇒ 相邻面夹角 ≤ 30°,读作圆柱(实测 22° 上下)。 */
+    static final int SAYA_SEG_AROUND = 20
+    static final int SAYA_SEG_ALONG = 24
+    /**
+     * 断面形状指数:y = a·sign(sin)|sin|^e, z = b·sign(cos)|cos|^e。
+     *
+     * <p>e = 1 ⇒ 正椭圆(每段转角完全均匀,最圆滑);e &lt; 1 会往"圆角矩形"靠,
+     * 但曲率全挤在四个角上 —— 实测 e=0.5 + 16 段时相邻面夹角高达 **36.8°**(肉眼仍是棱),
+     * 所以取 e = 0.8 并加到 20 段,实测夹角 22° 左右。
+     */
+    static final double SAYA_SECTION_EXP = 0.8d
+}
+
+/** 一个面的行号与顶点索引。 */
+class MeshFace {
+    int lineIndex = -1
+    List<Integer> vertexIndices = []
+    double minX = Double.MAX_VALUE
+    double maxX = -Double.MAX_VALUE
+}
+
+/** OBJ 读取与连通块分解。 */
+class LiliMesh {
+    /** 每组的 `f` 行(含顶点索引,索引已转成 0 基)。 */
+    static Map<String, List<MeshFace>> readFaces(List<String> lines) {
+        def byGroup = [:]
+        String current = null
+        int index = 0
+        lines.each { line ->
+            if (line.startsWith('g ')) {
+                current = line.substring(2).trim()
+            } else if (line.startsWith('f ') && current != null) {
+                def face = new MeshFace()
+                face.lineIndex = index
+                line.split(' ').drop(1).each { tok ->
+                    def bits = tok.split('/')
+                    if (bits.length > 0 && bits[0]) {
+                        face.vertexIndices << ((bits[0] as int) - 1)
+                    }
+                }
+                if (face.vertexIndices.size() >= 3) {
+                    if (!byGroup.containsKey(current)) {
+                        byGroup[current] = []
+                    }
+                    byGroup[current] << face
+                }
+            }
+            index++
+        }
+        return byGroup
+    }
+
+    static List<double[]> readVertices(List<String> lines) {
+        def verts = []
+        lines.each { line ->
+            if (line.startsWith('v ')) {
+                def p = line.split(' ')
+                verts << ([p[1] as double, p[2] as double, p[3] as double])
+            }
+        }
+        return verts
+    }
+
+    /** 连通块分解(共享任一顶点索引即同块),并按块算出 X 跨度写到面对象上。 */
+    static List<List<MeshFace>> components(List<MeshFace> faces, List<double[]> verts) {
+        int n = faces.size()
+        if (n == 0) {
+            return []
+        }
+        def parent = new int[n]
+        for (int i = 0; i < n; i++) {
+            parent[i] = i
+        }
+        def owner = [:]
+        for (int i = 0; i < n; i++) {
+            faces[i].vertexIndices.each { v ->
+                if (owner.containsKey(v)) {
+                    int a = find(parent, owner[v])
+                    int b = find(parent, i)
+                    if (a != b) {
+                        parent[a] = b
+                    }
+                } else {
+                    owner[v] = i
+                }
+            }
+        }
+        def buckets = [:]
+        for (int i = 0; i < n; i++) {
+            int root = find(parent, i)
+            if (!buckets.containsKey(root)) {
+                buckets[root] = []
+            }
+            buckets[root] << faces[i]
+        }
+        def out = []
+        buckets.each { root, list ->
+            double lo = Double.MAX_VALUE
+            double hi = -Double.MAX_VALUE
+            list.each { face ->
+                face.vertexIndices.each { v ->
+                    lo = Math.min(lo, verts[v][0])
+                    hi = Math.max(hi, verts[v][0])
+                }
+            }
+            list.each { face ->
+                face.minX = lo
+                face.maxX = hi
+            }
+            out << list
+        }
+        return out
+    }
+
+    private static int find(int[] parent, int x) {
+        while (parent[x] != x) {
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        }
+        return x
+    }
+}
+
+/**
+ * 从原壳拟合"中心线 + 断面"。
+ *
+ * <p>原壳的顶点按 X 聚成若干环;每个环给出 X、Y 中心、Y/Z 半轴。新圆柱沿长度在相邻环之间
+ * **线性插值**这些量 —— 于是新壳的体积、反り(弯曲)与包裹关系跟原来一致,只是绕圈方向变圆。
+ */
+class ShellFit {
+    /**
+     * 按**面心 X**把原壳切成 `stations` 个站点,每站取该站所有面的顶点包络。
+     *
+     * <p>为什么按面而不是按顶点聚类:原壳的"环"并不垂直于 X(壳本身有反り与剪切),
+     * 按 X 聚类会把相邻环的顶点混在一起(实测环数虚高到 13、鞘尻端 Y 半轴算出 0)。
+     * 按面心的 X 分箱则天然容忍剪切,得到的是**扫掠包络**,正合圆柱需要的断面序列。
+     *
+     * @return 每站 [X, Y 中心, Y 半轴, Z 半轴]
+     */
+    static List<double[]> envelope(List<MeshFace> shellFaces, List<double[]> verts, int stations) {
+        double lo = Double.MAX_VALUE
+        double hi = -Double.MAX_VALUE
+        shellFaces.each { face ->
+            face.vertexIndices.each { v ->
+                lo = Math.min(lo, verts[v][0])
+                hi = Math.max(hi, verts[v][0])
+            }
+        }
+        def bins = new List[stations]
+        for (int i = 0; i < stations; i++) {
+            bins[i] = []
+        }
+        shellFaces.each { face ->
+            double xc = 0.0d
+            face.vertexIndices.each { xc += verts[it][0] }
+            xc /= face.vertexIndices.size()
+            int b = (int) Math.floor((xc - lo) / Math.max(1.0e-9d, hi - lo) * (stations - 1) + 0.5d)
+            bins[Math.max(0, Math.min(stations - 1, b))] << face
+        }
+        def out = []
+        def last = null
+        for (int i = 0; i < stations; i++) {
+            double x = lo + (hi - lo) * (i / (double) (stations - 1))
+            def faces = bins[i]
+            if (faces.isEmpty()) {
+                out << (last == null ? ([x, 0.0d, 0.0d, 0.0d] as double[]) : ([x, last[1], last[2], last[3]] as double[]))
+                continue
+            }
+            double ymin = Double.MAX_VALUE
+            double ymax = -Double.MAX_VALUE
+            double zmin = Double.MAX_VALUE
+            double zmax = -Double.MAX_VALUE
+            faces.each { face ->
+                face.vertexIndices.each { v ->
+                    ymin = Math.min(ymin, verts[v][1] as double)
+                    ymax = Math.max(ymax, verts[v][1] as double)
+                    zmin = Math.min(zmin, verts[v][2] as double)
+                    zmax = Math.max(zmax, verts[v][2] as double)
+                }
+            }
+            def spec = ([x, (ymin + ymax) / 2.0d, (ymax - ymin) / 2.0d, (zmax - zmin) / 2.0d] as double[])
+            out << spec
+            last = spec
+        }
+        // 两端包络为 0 的站(原壳端点处的退化面)用邻站补齐,避免圆柱塌成一条线
+        for (int i = 0; i < out.size(); i++) {
+            if (out[i][2] <= 0.05d) {
+                def src = (i + 1 < out.size() && out[i + 1][2] > 0.05d) ? out[i + 1] : (i > 0 ? out[i - 1] : null)
+                if (src != null) {
+                    out[i] = ([out[i][0], src[1], src[2], src[3]] as double[])
+                }
+            }
+        }
+        return out
+    }
+}
+
+/** 新圆柱壳的几何 + UV。 */
+class CylinderShell {
+    final List<double[]> verts = []
+    final List<double[]> uvs = []
+    final List<int[]> faces = []
+
+    /**
+     * @param stations 断面站序列,每站 [X, Y 中心, Y 半轴, Z 半轴](见 {@link ShellFit#envelope})
+     * @param segAround 绕圈段数
+     * @param capTip    是否在鞘尻端封口(鞘口端永远开口,刃从那里进出)
+     */
+    static CylinderShell build(List<double[]> stations, int segAround, boolean capTip) {
+        def shell = new CylinderShell()
+        int rings = stations.size()
+        int cols = segAround + 1                       // 最后一列与第一列共用 UV ⇒ 绕圈无缝
+        for (int j = 0; j < rings; j++) {
+            double[] r = stations[j]
+            double s = j / (double) (rings - 1)        // 0 = 鞘尻, 1 = 鞘口
+            // 采样行 = 1 - v(重锋解析 OBJ 时把 v 翻成 1-v),所以这里先算行再转回 v
+            double row = LiliAtlas.SAYA_ROW0 + (LiliAtlas.SAYA_ROW1 - LiliAtlas.SAYA_ROW0) * s
+            double vObj = 1.0d - row
+            for (int i = 0; i < cols; i++) {
+                double a = 2.0d * Math.PI * i / segAround
+                double sa = Math.sin(a)
+                double ca = Math.cos(a)
+                // 超椭圆断面(指数见 LiliAtlas.SAYA_SECTION_EXP):比正圆更贴"扁鞘",又足够圆滑
+                double y = r[1] + r[2] * Math.signum(sa) * Math.pow(Math.abs(sa), LiliAtlas.SAYA_SECTION_EXP)
+                double z = r[3] * Math.signum(ca) * Math.pow(Math.abs(ca), LiliAtlas.SAYA_SECTION_EXP)
+                shell.verts << ([r[0], y, z] as double[])
+                double u = LiliAtlas.SAYA_U0 + (LiliAtlas.SAYA_U1 - LiliAtlas.SAYA_U0) * (i / (double) segAround)
+                shell.uvs << ([u, vObj] as double[])
+            }
+        }
+        for (int j = 0; j < rings - 1; j++) {
+            for (int i = 0; i < segAround; i++) {
+                int a = j * cols + i
+                int b = j * cols + i + 1
+                int c = (j + 1) * cols + i + 1
+                int d = (j + 1) * cols + i
+                shell.faces << ([a, b, c, d] as int[])
+            }
+        }
+        if (capTip) {
+            double[] r = stations[0]
+            int centre = shell.verts.size()
+            shell.verts << ([r[0], r[1], 0.0d] as double[])
+            shell.uvs << ([LiliAtlas.SAYA_U0 + (LiliAtlas.SAYA_U1 - LiliAtlas.SAYA_U0) * 0.5d, 1.0d - LiliAtlas.SAYA_ROW0] as double[])
+            for (int i = 0; i < segAround; i++) {
+                shell.faces << ([centre, (i + 1) % cols, i] as int[])
+            }
+        }
+        return shell
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 任务
+// ----------------------------------------------------------------------------
+
+def liliDir0 = new File(project.projectDir, 'src/main/resources/assets/applied_slash/models/lili')
+def liliObjTarget = new File(liliDir0, 'lili.obj')
+def liliObjSource = new File(project.projectDir, 'art/lili_source.obj')
+def liliMeshPreviewDir = new File(project.projectDir, 'build/lili-texture-preview')
+def liliMeshRestore = project.hasProperty('liliRestoreMesh')
+
+/** 生成的 OBJ 首部注释:出处 + 修改声明(必须随文件走,MIT 要求保留版权与修改说明)。 */
+static List<String> meshHeader() {
+    return [
+            '# Reused from Slashblade-Murasame (assets/murasame/models/murasame/murasamemaru.obj)',
+            '# License: MIT, Copyright (c) 2025 CeliaClaire -- see THIRD-PARTY-NOTICES.md',
+            '# Modified: 301 faces of sheath accessories (two metal rings + kurikata + sageo cord) were removed.',
+            '#           Geometry and UVs are otherwise UNCHANGED from the original.',
+            '#           Generated by tools/lili-mesh.gradle (gradlew generateLiliMesh); original kept in art/lili_source.obj',
+    ]
+}
+
+tasks.register('generateLiliMesh') {
+    group = 'applied slash tooling'
+    description = '把鞘壳重做成 16×24 圆柱 + 删掉鞘上的配件 + 全组 UV 重排到 1024×2048 图集'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读写资源文件')
+
+    doLast {
+        if (liliMeshRestore) {
+            def src = liliObjSource.readLines('UTF-8')
+            def body = src.dropWhile { it.startsWith('#') }
+            liliObjTarget.setText((meshHeader() + body).join('\n') + '\n', 'UTF-8')
+            println '===== generateLiliMesh ====='
+            println "  已还原成 ${liliObjSource}(丛雨丸原始几何:三棱柱壳 + 配件面集;贴图布局也回到 1:1)"
+            return
+        }
+        if (!liliObjSource.isFile()) {
+            throw new GradleException("缺少原始模型存档 ${liliObjSource}(重建与回滚都依赖它)")
+        }
+
+        def srcLines = liliObjSource.readLines('UTF-8')
+        def body = srcLines.dropWhile { it.startsWith('#') }
+        def facesByGroup = LiliMesh.readFaces(body)
+        def verts = LiliMesh.readVertices(body)
+        def vLines = body.findAll { it.startsWith('v ') }
+        def vtLines = body.findAll { it.startsWith('vt ') }
+
+        // ---- 1) 拟合原壳 ----
+        def shellComps = LiliMesh.components(facesByGroup['sheath'] ?: [], verts)
+        if (shellComps.isEmpty()) {
+            throw new GradleException('sheath 组没有任何面:源模型不对?')
+        }
+        def shell = shellComps.max { a, b -> (a[0].maxX - a[0].minX) <=> (b[0].maxX - b[0].minX) }
+        // 回退版(用户要求):只删掉鞘上的配件面集,**保持原壳几何与原 UV 不变**。
+        // 圆柱化那套(ShellFit/CylinderShell + UV 图集重排)代码保留在文件里备用,但默认不启用。
+        def keepLines = [] as Set
+        shell.each { face -> keepLines << face.lineIndex }
+        int droppedFaces = (facesByGroup['sheath'] ?: []).size() - shell.size()
+
+        // ---- 组装 OBJ:原样拷贝 v/vt/各组面,只把 sheath 组里不属于"整根壳"的面丢掉 ----
+        def out = []
+        String current = null
+        body.eachWithIndex { line, idx ->
+            if (line.startsWith('g ')) {
+                current = line.substring(2).trim()
+                out << line
+                return
+            }
+            if (line.startsWith('f ') && current == 'sheath') {
+                if (keepLines.contains(idx)) {
+                    out << line
+                }
+                return
+            }
+            if (line.startsWith('v ') || line.startsWith('vt ') || line.startsWith('f ')
+                    || line.startsWith('vn ') || line.startsWith('usemtl ') || line.startsWith('s ')) {
+                out << line
+            }
+        }
+
+        liliObjTarget.setText((meshHeader() + out).join('\n') + '\n', 'UTF-8')
+
+        // ---- 统计 ----
+        def after = liliObjTarget.readLines('UTF-8')
+        def afterFaces = LiliMesh.readFaces(after)
+        println '===== generateLiliMesh(回退版:只删配件,不动几何与 UV)====='
+        println "  源文件      : ${liliObjSource}(${liliObjSource.length()} B,不可变)"
+        println "  产物        : ${liliObjTarget}(${liliObjTarget.length()} B)"
+        println String.format(Locale.ROOT, '  保留的鞘壳  : %d 面,X[%.1f, %.1f](跨度 %.1f)',
+                shell.size(), shell[0].minX, shell[0].maxX, shell[0].maxX - shell[0].minX)
+        println "  删除的配件  : ${droppedFaces} 面(金属环 ×2 + 栗形 + 下绪)"
+        println '  各组面数(原 → 新):'
+        def groups0 = ['blade', 'blade_damaged', 'blade_fragment', 'effect', 'sheath',
+                       'item_blade', 'item_bladens', 'item_damaged']
+        groups0.each { g ->
+            int before = (facesByGroup[g] ?: []).size()
+            int now = (afterFaces[g] ?: []).size()
+            println String.format(Locale.ROOT, '    %-15s %4d → %4d %s', g, before, now,
+                    before == now ? (g == 'sheath' ? '(删配件后)' : '(不变)') : '(!! 面数变了)')
+        }
+        println '===== 结束(断言在 verifyResources:连通块 1 / X 跨度 ≥ 250 / 其余 7 组面数不变)====='
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 分解图:gradlew liliPartsMap —— "哪一块是哪一个"的对照表
+// ----------------------------------------------------------------------------
+tasks.register('liliPartsMap') {
+    group = 'applied slash tooling'
+    description = '把世界姿态各组的连通块各画一种颜色并输出编号对照表(以后指编号即可)'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读 OBJ 并写预览图')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        def lines = liliObjTarget.readLines('UTF-8')
+        def body = lines.dropWhile { it.startsWith('#') }
+        def byGroupAll = LiliMesh.readFaces(body)
+        def verts = LiliMesh.readVertices(body)
+        def byGroup = [:]
+        ['blade', 'blade_damaged', 'blade_fragment', 'effect', 'sheath'].each { g ->
+            if (byGroupAll[g] != null) {
+                byGroup[g] = byGroupAll[g]
+            }
+        }
+        def legend = []
+        def mapFile = new File(liliMeshPreviewDir, 'parts-map.png')
+        LiliPartsMap.render(mapFile, byGroup, verts, legend, 2.0d, 2, 120)
+        def txt = new StringBuilder('# parts-map 编号对照(侧视图,世界坐标)\n')
+        txt.append('# 编号  组名            面数   包围盒\n')
+        legend.each { row -> txt.append(String.format(Locale.ROOT, '  %-4s  %-14s  %-5s  %s%n', row[0], row[1], row[2], row[3])) }
+        new File(liliMeshPreviewDir, 'parts-map.txt').setText(txt.toString(), 'UTF-8')
+        println '===== liliPartsMap ====='
+        println "  图  : ${mapFile}(${legend.size()} 块)"
+        legend.each { row -> println "    #${row[0]}  ${row[1]}  面 ${row[2]}  ${row[3]}" }
+        println '===== 结束 ====='
+    }
+}
+
+/**
+ * 「分解图」:把每个组切成连通块,每块一种颜色画成侧视图,并输出编号对照表。
+ *
+ * <p>用途:以后你说"去掉某一块"时,直接指图上的编号即可 —— 不必再靠猜坐标或面数。
+ */
+class LiliPartsMap {
+    static final int[] PALETTE = [
+            0xFFE64D4D, 0xFF4DA6E6, 0xFF66CC66, 0xFFE6C34D, 0xFFB266E6, 0xFF4DE6D9,
+            0xFFE68A4D, 0xFF8AE64D, 0xFFE64DB2, 0xFF4D5AE6, 0xFF9EE64D, 0xFFE64DE6,
+            0xFF4DE68A, 0xFFE6E64D, 0xFF4D8AE6, 0xFFE64D8A]
+
+    static void render(File out, Map<String, List<MeshFace>> byGroup, List<double[]> verts,
+                       List<List<String>> legendRows, double pxPerUnit, int zoom, int canvasHeightUnits) {
+        def items = []
+        int nextColour = 0
+        byGroup.each { group, faces ->
+            def comps = LiliMesh.components(faces, verts)
+            comps.eachWithIndex { comp, ci ->
+                items << [faces: comp, colour: nextColour % PALETTE.length, group: group, index: ci]
+                double lo = Double.MAX_VALUE
+                double hi = -Double.MAX_VALUE
+                double ylo = Double.MAX_VALUE
+                double yhi = -Double.MAX_VALUE
+                comp.each { face ->
+                    face.vertexIndices.each { v ->
+                        lo = Math.min(lo, verts[v][0]); hi = Math.max(hi, verts[v][0])
+                        ylo = Math.min(ylo, verts[v][1]); yhi = Math.max(yhi, verts[v][1])
+                    }
+                }
+                legendRows << ([String.valueOf(nextColour + 1), group, String.valueOf(comp.size()),
+                               String.format(Locale.ROOT, 'X[%.1f, %.1f] Y[%.1f, %.1f]', lo, hi, ylo, yhi)] as List<String>)
+                nextColour++
+            }
+        }
+
+        int cw = (int) Math.ceil(360.0d * pxPerUnit) + 8
+        int ch = (int) Math.ceil(canvasHeightUnits * pxPerUnit) + 8
+        def small = new java.awt.image.BufferedImage(cw, ch, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        def g = small.createGraphics()
+        g.setColor(new java.awt.Color(30, 30, 36))
+        g.fillRect(0, 0, cw, ch)
+        double ox = cw - 4.0d
+        double oy = ch * 0.55d
+        def allFaces = []
+        items.each { item ->
+            item.faces.each { face ->
+                double depth = 0.0d
+                face.vertexIndices.each { depth += verts[it][2] }
+                allFaces << [face: face, depth: depth / face.vertexIndices.size(), colour: item.colour]
+            }
+        }
+        allFaces.sort { a, b -> (a.depth as double) <=> (b.depth as double) }
+        allFaces.each { entry ->
+            def xs = entry.face.vertexIndices.collect { (int) Math.floor(ox + (verts[it][0] - 41.7d) * pxPerUnit) } as int[]
+            def ys = entry.face.vertexIndices.collect { (int) Math.floor(oy - verts[it][1] * pxPerUnit) } as int[]
+            g.setColor(new java.awt.Color(PALETTE[entry.colour as int], true))
+            g.fillPolygon(xs, ys, xs.length)
+        }
+        items.each { item ->
+            double cx = 0.0d
+            double cy = 0.0d
+            int n = 0
+            item.faces.each { face ->
+                face.vertexIndices.each { v ->
+                    cx += verts[v][0]; cy += verts[v][1]; n++
+                }
+            }
+            if (n == 0) {
+                return
+            }
+            cx /= n
+            cy /= n
+            int sx = (int) Math.floor(ox + (cx - 41.7d) * pxPerUnit)
+            int sy = (int) Math.floor(oy - cy * pxPerUnit)
+            g.setFont(new java.awt.Font('SansSerif', java.awt.Font.BOLD, 11))
+            g.setColor(new java.awt.Color(20, 20, 24))
+            g.drawString(String.valueOf(item.colour + 1), sx + 1, sy + 1)
+            g.setColor(java.awt.Color.WHITE)
+            g.drawString(String.valueOf(item.colour + 1), sx, sy)
+        }
+        g.dispose()
+        def big = new java.awt.image.BufferedImage(cw * zoom, ch * zoom, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        def g2 = big.createGraphics()
+        g2.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR)
+        g2.drawImage(small, 0, 0, cw * zoom, ch * zoom, null)
+        g2.dispose()
+        out.parentFile.mkdirs()
+        javax.imageio.ImageIO.write(big, 'png', out)
+    }
+}

@@ -38,14 +38,9 @@ def palette = [
         'R' : 0xFF7A2E2E,   // 柄卷红棕
         'r' : 0xFF43191C,   // 柄卷暗部
         'W' : 0xFFFFFFFF,   // 状态灯(运行时染色)
-        // --- 充能刀 / 充能方块(PLAN-CHARGED-BLADES §9.1)---
-        // 5 把刀共用同一个刀身骨架字符画(见下面的 bladeTemplate),只用下面这 5 个「能量色」区分;
-        // 这样既能一眼区分,又把工作量压到最小(方案 §3.4 的硬约束:16x16)。
-        'c' : 0xFF4FD6E8,   // 能量色·青蓝   → 充能刀·脉冲
-        'u' : 0xFFA06BE8,   // 能量色·紫罗兰 → 充能刀·谐振
-        'a' : 0xFFE8B44A,   // 能量色·琥珀金 → 充能刀·涌流
-        'x' : 0xFFE0513C,   // 能量色·赤红   → 充能刀·超荷
-        'q' : 0xFF7B4FD0,   // 能量色·暗紫   → 充能刀·奇点
+        // --- 充能方块 ---
+        // 5 把自设充能刀已删除(2026-02),它们的 5 个"能量色"与刀身字符画一并移除;
+        // 留在调色板里的只有充能器灯芯色。
         'e' : 0xFF3FE08A,   // 充能器灯芯(绿);界面能量条也用同一色值
 ]
 
@@ -142,46 +137,11 @@ def driveFace = (0..15).collect { int y ->
 }
 
 // ----------------------------------------------------------------------------
-// 5 把「充能拔刀剑」的物品图标(item/charged_blade_*.png,各 16x16)
+// (已删除)5 把「充能拔刀剑」的物品图标
 // ----------------------------------------------------------------------------
-// 设计:**同一个刀身骨架**,只在刃口那一列换「能量色」。'c' 是占位符,由 bladeArt 替换成
-// 每把刀自己的色标(青蓝 / 紫罗兰 / 琥珀金 / 赤红 / 暗紫)。
-// 骨架:由左下(柄头)往右上(刀尖)斜嵌一把太刀 —— 柄卷 r/R、鍔 G、刀身 S/H、能量边 c。
-def bladeTemplate = [
-        '................',
-        '.............##.',
-        '............#H#.',
-        '...........#HS#.',
-        '..........#HSc#.',
-        '.........#HSc#..',
-        '........#HSc#...',
-        '.......#HSc#....',
-        '......#HSc#.....',
-        '.....#HSc#......',
-        '....#HSc#.......',
-        '...#GGG#........',
-        '..#RrR#.........',
-        '..#rR#..........',
-        '..####..........',
-        '................',
-]
-
-/** 把骨架里的占位符 'c' 换成该把刀的能量色标。 */
-def bladeArt = { String accent ->
-    if (!palette.containsKey(accent)) {
-        throw new GradleException("未知的能量色标 '${accent}'(先把它加进 palette)")
-    }
-    bladeTemplate.collect { String row -> row.replace('c', accent) }
-}
-
-// 5 把刀的能量色(与 lang 里的名字一一对应:Pulse/Resonance/Surge/Overcharge/Singularity)
-def bladeAccents = [
-        'charged_blade_pulse'      : 'c',
-        'charged_blade_resonance'  : 'u',
-        'charged_blade_surge'      : 'a',
-        'charged_blade_overcharge' : 'x',
-        'charged_blade_singularity': 'q',
-]
+// 2026-02:5 把自设充能刀整体删除(含它们的 item/charged_blade_*.png 与刀身骨架字符画)。
+// 现在的拔刀剑「莉莉」是**数据包刀**,物品就是重锋原生的 slashblade:slashblade,
+// 图标/模型全部由重锋管线画,本模组不再生成任何刀身贴图(见 tools/resources.gradle 的莉莉自检)。
 
 // ----------------------------------------------------------------------------
 // 充能方块贴图(block/blade_charger.png,16x16,cube_all 单张贴图)
@@ -248,10 +208,7 @@ tasks.register('generateTextures') {
         // 不可堆叠物品元件的本体层:纯手绘,没有"导入图"这回事,因此无条件写(上面那个守卫只针对本体层 slash_blade_cell)
         writePng(assetRoot.file('item/unstackable_cell.png').asFile, unstackableCell)
 
-        // 5 把充能刀的物品图标(同一骨架 + 逐把不同的能量色)+ 充能方块贴图
-        bladeAccents.each { String id, String accent ->
-            writePng(assetRoot.file("item/${id}.png").asFile, bladeArt(accent))
-        }
+        // 充能方块贴图(刀身图标已随 5 把充能刀一并删除)
         writePng(assetRoot.file('block/blade_charger.png').asFile, chargerBlock)
     }
 }
@@ -464,10 +421,7 @@ tasks.register('texturePreviews') {
         // 物品栏里的真实尺寸(1 倍),避免"8 倍图好看但实际只有 16px"的误判
         writePreviewFromPng(new File(dir, 'slash_blade_cell_1x.png'), bodyPng, 1)
 
-        // 5 把充能刀 + 充能方块:8 倍预览(16x16 不放大没法肉眼验收配色差异)
-        bladeAccents.each { String id, String accent ->
-            writePreview(new File(dir, "${id}.png"), bladeArt(accent), 8)
-        }
+        // 充能方块:8 倍预览(16x16 不放大没法肉眼验收配色差异)
         writePreview(new File(dir, 'blade_charger.png'), chargerBlock, 8)
         writePreview(new File(dir, 'blade_charger_1x.png'), chargerBlock, 1)
     }

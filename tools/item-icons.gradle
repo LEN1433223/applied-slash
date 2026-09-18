@@ -1,0 +1,118 @@
+
+// ----------------------------------------------------------------------------
+// 任务:itemIconUnify —— 统一三个「元件」物品图标的尺寸与物体占比
+// ----------------------------------------------------------------------------
+// 背景:两张图标被换成了 ~2208x2080 的**平滑大图**(1.5 万 ~ 5.5 万种颜色,不是硬边像素画),
+//       而 slash_blade_cell 仍是 16x16 ⇒ 三者在背包里大小不一致,而且 2~3 MB 的 PNG 会白白撑大 jar。
+// 做法:按**内容包围盒**取图,用**面积平均**(alpha 加权预乘)缩到统一画布,
+//       使三张图的物体最长边一致、都以左上为基准摆放(与原有 16x16 图标同基准)。
+//       平滑大图必须用面积平均:最近邻会严重锯齿,而双三次会在边缘产生过冲彩边。
+// ----------------------------------------------------------------------------
+def iconDir  = new File(project.projectDir, 'src/main/resources/assets/applied_slash/textures/item')
+def iconSrc  = new File(project.projectDir, 'art/item_icons_src')
+// 尺寸可由 -PiconSize=32 覆盖。为什么不用 16x16:两张图是 1800px 级别的平滑大图,
+// 塞进 16px 会被面积平均糊成色块(实测过),32 才能保住形状;32x32 物品贴图在 MC 里完全合法。
+def ICON_CANVAS = (project.findProperty('iconSize') ?: '32') as int
+def ICON_FIT    = ICON_CANVAS
+
+class IconKit {
+    /** 内容包围盒(alpha > 8 的像素范围);全透明则返回 null。 */
+    static int[] bbox(java.awt.image.BufferedImage img) {
+        int x0 = img.width, y0 = img.height, x1 = -1, y1 = -1
+        for (int y = 0; y < img.height; y++) {
+            for (int x = 0; x < img.width; x++) {
+                int argb = img.getRGB(x, y)
+                if (((argb >>> 24) & 0xFF) > 8) {
+                    if (x < x0) { x0 = x }
+                    if (y < y0) { y0 = y }
+                    if (x > x1) { x1 = x }
+                    if (y > y1) { y1 = y }
+                }
+            }
+        }
+        return x1 < 0 ? null : ([x0, y0, x1 - x0 + 1, y1 - y0 + 1] as int[])
+    }
+
+    /**
+     * 面积平均缩小:每个输出像素取源矩形内所有像素的 alpha 加权平均(先预乘再还原),
+     * 这样透明边缘不会把颜色拽黑(普通的"直接平均 RGB"会)。
+     */
+    static java.awt.image.BufferedImage boxScale(java.awt.image.BufferedImage src,
+                                                 int sx, int sy, int sw, int sh, int dw, int dh) {
+        def out = new java.awt.image.BufferedImage(dw, dh, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        for (int dy = 0; dy < dh; dy++) {
+            int y0 = sy + (int) Math.floor(dy * (double) sh / dh)
+            int y1 = sy + (int) Math.ceil((dy + 1) * (double) sh / dh)
+            if (y1 <= y0) { y1 = y0 + 1 }
+            for (int dx = 0; dx < dw; dx++) {
+                int x0 = sx + (int) Math.floor(dx * (double) sw / dw)
+                int x1 = sx + (int) Math.ceil((dx + 1) * (double) sw / dw)
+                if (x1 <= x0) { x1 = x0 + 1 }
+                double aSum = 0.0d, rSum = 0.0d, gSum = 0.0d, bSum = 0.0d
+                int n = 0
+                for (int y = y0; y < y1 && y < src.height; y++) {
+                    for (int x = x0; x < x1 && x < src.width; x++) {
+                        int argb = src.getRGB(x, y)
+                        int a = (argb >>> 24) & 0xFF
+                        double af = a / 255.0d
+                        aSum += af
+                        rSum += ((argb >> 16) & 0xFF) * af
+                        gSum += ((argb >> 8) & 0xFF) * af
+                        bSum += (argb & 0xFF) * af
+                        n++
+                    }
+                }
+                if (n == 0 || aSum <= 0.0d) {
+                    out.setRGB(dx, dy, 0)
+                } else {
+                    int a = (int) Math.round(255.0d * aSum / n)
+                    int r = (int) Math.round(rSum / aSum)
+                    int g = (int) Math.round(gSum / aSum)
+                    int b = (int) Math.round(bSum / aSum)
+                    out.setRGB(dx, dy, (a << 24) | (r << 16) | (g << 8) | b)
+                }
+            }
+        }
+        return out
+    }
+}
+
+tasks.register('itemIconUnify') {
+    group = 'applied slash tooling'
+    description = '统一三个元件图标尺寸(默认 32x32;按内容包围盒面积平均缩放,物体占比一致)'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读写贴图文件')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        def names = ['slash_blade_cell.png', 'unstackable_cell.png', 'portable_slash_cell.png']
+        println '===== itemIconUnify(统一三个元件图标)====='
+        println String.format(Locale.ROOT, '  %-26s %-18s %-18s %s', '文件', '原尺寸', '包围盒', '结果')
+        names.each { name ->
+            def out = new File(iconDir, name)
+            def srcFile = new File(iconSrc, name)
+            if (!srcFile.isFile()) { srcFile = out }
+            if (!srcFile.isFile()) { println "  跳过(不存在): ${name}"; return }
+            def img = javax.imageio.ImageIO.read(srcFile)
+            if (img == null) { println "  跳过(读不出): ${name}"; return }
+            def bb = IconKit.bbox(img)
+            if (bb == null) { println "  跳过(全透明): ${name}"; return }
+            // 保持长宽比,把包围盒塞进 ICON_FIT 的方框里
+            double scale = ICON_FIT / (double) Math.max(bb[2], bb[3])
+            int dw = Math.max(1, (int) Math.round(bb[2] * scale))
+            int dh = Math.max(1, (int) Math.round(bb[3] * scale))
+            def small = IconKit.boxScale(img, bb[0], bb[1], bb[2], bb[3], dw, dh)
+            def canvas = new java.awt.image.BufferedImage(ICON_CANVAS, ICON_CANVAS,
+                    java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            def g = canvas.createGraphics()
+            g.drawImage(small, 0, 0, null)          // 与原有图标同基准:左上
+            g.dispose()
+            javax.imageio.ImageIO.write(canvas, 'png', out)
+            int before = (int) (srcFile.length() / 1024)
+            int after = (int) (out.length() / 1024)
+            println String.format(Locale.ROOT, '  %-26s %-18s %-18s %dx%d 画布 16x16  %d KB → %d KB',
+                    name, "${img.width}x${img.height}", "${bb[2]}x${bb[3]}", dw, dh, ICON_CANVAS, ICON_CANVAS, before, Math.max(1, after))
+        }
+        println '  备份原件在 art/item_icons_src/(要回退就把它拷回来)'
+        println '===== 结束(接着跑 verifyResources 校验 尺寸/8bit/colorType=6/非交错)====='
+    }
+}

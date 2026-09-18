@@ -3,6 +3,8 @@ package com.applied.slash;
 import com.applied.slash.cell.SlashBladeCellHandler;
 import com.applied.slash.cell.UnstackableCellHandler;
 import com.applied.slash.charged.block.BladeChargerRegistry;
+import com.applied.slash.portable.PortableSlashCellHandler;
+import com.applied.slash.portable.PortableSlashCellItem;
 
 import appeng.api.client.StorageCellModels;
 import appeng.api.storage.StorageCells;
@@ -34,6 +36,15 @@ public final class AppliedSlashAe2 {
             UnstackableItemCellItem::new,
             new Item.Properties().stacksTo(1));
 
+    /**
+     * 手持「Slash 元件」:AE2 便携元件(需充电),容量 8 把拔刀剑,同 NBT 不合并。
+     * 界面直接复用 AE2 的便携元件菜单类型(见 {@link PortableSlashCellItem})。
+     */
+    public static final DeferredItem<PortableSlashCellItem> PORTABLE_SLASH_CELL = ITEMS.registerItem(
+            "portable_slash_cell",
+            PortableSlashCellItem::new,
+            new Item.Properties().stacksTo(1));
+
     private AppliedSlashAe2() {
     }
 
@@ -57,6 +68,8 @@ public final class AppliedSlashAe2 {
         StorageCells.addCellHandler(SlashBladeCellHandler.INSTANCE);
         // 第二个元件同理:两个 handler 的 isCell 互斥(各自认自己的物品类),注册顺序对它们无影响
         StorageCells.addCellHandler(UnstackableCellHandler.INSTANCE);
+        // 第三个:手持便携元件(8 格拔刀剑)。它的 isCell 只看自己的物品类,与上面两个互斥。
+        StorageCells.addCellHandler(PortableSlashCellHandler.INSTANCE);
 
         // 让 ME 驱动器 / 机箱里渲染出元件本体(未注册时回退为 ae2:block/drive/drive_cell)
         StorageCellModels.registerModel(SLASH_BLADE_CELL.get(),

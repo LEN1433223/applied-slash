@@ -1,0 +1,33 @@
+{
+  "$schema": "ae2:screens/schema.json",
+  "includes": [
+    "ae2:screens/common/common.json",
+    "ae2:screens/common/palette.json",
+    "ae2:screens/common/player_inventory.json"
+  ],
+  "generatedBackground": {
+    "width": 176,
+    "height": 166
+  },
+  "slots": {
+    "BLADE_CHARGER_BLADE": {
+      "left": 26,
+      "top": 20
+    },
+    "BLADE_CHARGER_FUEL": {
+      "left": 26,
+      "top": 46
+    }
+  },
+  "text": {
+    "dialog_title": {
+      "text": {
+        "translate": "container.applied_slash.blade_charger"
+      },
+      "position": {
+        "left": 8,
+        "top": 6
+      }
+    }
+  }
+}

@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拔刀剑充能器 — 界面规范 · 熔炉式经典</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   拔刀剑充能器 · 界面原型 / 规范页(第七版:熔炉式经典布局)
+   ──────────────────────────────────────────────────────────────────────────
+   面板区 1:1 复刻 BladeChargerScreen.java:位置用**同一批常量**,
+   改这里的值 = 改 Java 常量(design/check_mockup.js 会逐项校验)。
+
+   本版与上一版(AE2 灰蓝面板)的差别 —— 这是一次**做减法**:
+     · 面板回到原版 GUI 的白灰语言:外框 #373737 / 上左内白 #FFF / 下右内暗 #555 / 底 #C6C6C6
+     · 槽位是"凹陷"(上左压暗、下右提亮),与面板的"凸起"方向相反
+     · 两个机器槽的坐标与熔炉逐个像素相同(26,20 与 26,46)
+     · 删掉:标题文字、标题下的强调线、? 帮助钮、三行"能量/虞美人/缓冲"标签、条内数值
+     · 只留:火焰(烧燃料)、箭头(进度)、刀的能量数字、"物品栏"标签、一条缓冲条
+     · 面板从 176×184 收到 176×166(与熔炉、箱子同尺寸)
+
+   ── 高度预算(机器区 0..80,背包区 80..166)─────────────────────────────
+     刀槽 20..38   火焰 38..49   箭头 30..45   能量读数 33   缓冲条 47..53
+     物品栏标签 73   背包 84..101 / 102..119 / 120..137   快捷栏 142..159
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root{
+  /* ── 工具页外壳(与游戏无关)── */
+  --ui-bg:      #eceef2;
+  --ui-surface: #ffffff;
+  --ui-raised:  #f6f7fa;
+  --ui-line:    #e4e6ec;
+  --ui-line-2:  #d2d6e0;
+  --ui-text:    #1a1a1f;
+  --ui-dim:     #5b5b66;
+  --ui-faint:   #8a8a97;
+  --ui-brand:   #2a5f8f;
+  --ui-brand-bg:#e3edf6;
+  --ui-shadow:  0 1px 2px rgba(20,20,28,.06), 0 8px 24px rgba(20,20,28,.07);
+  --r-sm:6px; --r-md:10px; --r-lg:14px;
+
+  /* ══ 游戏侧布局常量(唯一事实来源,与 Java 一一对应)══ */
+  --panel-w: 176px;
+  --panel-h: 166px;
+
+  --blade-slot-x: 26px; --blade-slot-y: 20px;
+  --fuel-slot-x: 26px;  --fuel-slot-y: 46px;
+  --slot-frame: 18px;
+
+  --flame-x: 29px; --flame-y: 38px;
+  --energy-y: 26px;
+  --buf-gauge-x: 58px; --buf-gauge-y: 40px; --buf-gauge-w: 102px; --buf-gauge-h: 10px;
+
+  --inv-x: 8px; --inv-y: 84px;   /* 快捷栏 = --inv-y + 54(由 JS 算,结构上不可能写错) */
+
+  /* ── 游戏侧配色(色值与 VanillaPanel / BladeChargerScreen 一一对应)──
+     门槛(check_mockup.js 复算):文字 ≥4.5:1 对面板底;图形 ≥3.0:1。 */
+  --c-panel-border: #373737;
+  --c-panel-inner:  #ffffff;
+  --c-panel-shadow: #555555;
+  --c-panel-face:   #c6c6c6;
+  --c-slot-face:    #8b8b8b;
+  --c-track:        #2e2e2e;
+
+  --c-text:   #303030;
+  --c-label:  #404040;
+  /* 仪表里的填充是**亮色**:轨道是深凹槽 #2E2E2E(见下),浅色压上去才有 7~9:1。
+     与本页文字(暗字压浅面板)方向相反 —— 文字压浅底、填充压暗底。 */
+  --c-accent: #a8d0ec;
+  --c-ok:     #a8e0b0;
+  --c-low:    #e8d0a8;
+  --c-error:  #f0a8a8;
+  --c-flame-out: #a83a08;
+  --c-flame-in:  #f5c542;
+  --c-flame-off: rgba(0,0,0,.20);
+}
+
+/* ── 深色主题(一键切换,布局完全不变)── */
+body[data-theme="dark"]{
+  --ui-bg:#0b0c10; --ui-surface:#14161c; --ui-raised:#1b1e26;
+  --ui-line:#262a34; --ui-line-2:#333846;
+  --ui-text:#e8eaf0; --ui-dim:#8b93a5; --ui-faint:#5c6373;
+  --ui-brand:#7fb2df; --ui-brand-bg:#16283a;
+  --ui-shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.25);
+
+  --c-panel-border:#0b0c10; --c-panel-inner:#464b57; --c-panel-shadow:#1a1c22;
+  --c-panel-face:#2a2d34;
+  --c-slot-face:#171a1f; --c-track:#111317;
+  --c-text:#e6e8ee; --c-label:#a8afbd;
+  --c-accent:#8ec0e4; --c-ok:#8ed49c; --c-low:#e4c88e; --c-error:#e89a9a;
+  --c-flame-out:#e8823c; --c-flame-in:#f7d75e;
+  --c-flame-off: rgba(255,255,255,.10);
+}
+
+*{ margin:0; padding:0; box-sizing:border-box; }
+
+body{
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-family: "Inter", "Segoe UI Variable Text", "Segoe UI",
+               "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size:13px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+  transition: background .18s, color .18s;
+}
+
+.topbar{
+  position:sticky; top:0; z-index:50;
+  display:flex; align-items:center; gap:14px;
+  height:52px; padding:0 20px;
+  background: color-mix(in srgb, var(--ui-surface) 82%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom:1px solid var(--ui-line);
+}
+.brand{ display:flex; align-items:center; gap:10px; }
+.brand .dot{
+  width:20px; height:20px; border-radius:5px;
+  background: linear-gradient(140deg,#c6c6c6,#7b7b7b);
+  box-shadow: inset 0 1px 0 #fff, 0 0 0 1px #373737;
+}
+.brand b{ font-size:13px; font-weight:600; }
+.brand span{ color:var(--ui-faint); font-size:12px; }
+.topbar .spacer{ flex:1; }
+.badge{
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:11px; color:var(--ui-dim);
+  background:var(--ui-raised); border:1px solid var(--ui-line);
+  padding:4px 9px; border-radius:999px;
+}
+.badge i{ width:6px; height:6px; border-radius:50%; background:var(--c-ok); font-style:normal; }
+.themebtn{
+  display:inline-flex; align-items:center; gap:6px;
+  font:inherit; font-size:12px; cursor:pointer;
+  color:var(--ui-text); background:var(--ui-raised);
+  border:1px solid var(--ui-line-2); border-radius:8px; padding:5px 11px;
+  transition: background .12s, border-color .12s;
+}
+.themebtn:hover{ background:var(--ui-brand-bg); border-color:var(--ui-brand); }
+
+.layout{
+  display:grid; grid-template-columns: 250px minmax(0,1fr) 280px;
+  gap:16px; padding:16px 20px 40px; align-items:start;
+}
+@media (max-width:1150px){ .layout{ grid-template-columns:1fr; } }
+
+.card{
+  background:var(--ui-surface); border:1px solid var(--ui-line);
+  border-radius:var(--r-lg); box-shadow:var(--ui-shadow); overflow:hidden;
+}
+.card > header{
+  display:flex; align-items:center; gap:8px;
+  padding:11px 14px; border-bottom:1px solid var(--ui-line);
+  font-size:11px; font-weight:600; letter-spacing:.9px;
+  text-transform:uppercase; color:var(--ui-dim);
+}
+.card > header .tag{
+  margin-left:auto; font-size:10px; letter-spacing:0;
+  text-transform:none; color:var(--ui-faint); font-weight:400;
+}
+
+.nav{ display:flex; flex-direction:column; gap:2px; padding:8px; }
+.nav a{
+  display:flex; align-items:center; gap:10px;
+  padding:8px 10px; border-radius:var(--r-sm);
+  color:var(--ui-dim); text-decoration:none; font-size:12.5px;
+}
+.nav a:hover{ background:var(--ui-raised); color:var(--ui-text); }
+.nav a.on{ background:var(--ui-brand-bg); color:var(--ui-brand); }
+.nav a .k{
+  width:18px; height:18px; flex:none; border-radius:4px;
+  display:grid; place-items:center; font-size:10px; font-weight:600;
+  background:var(--ui-raised); color:var(--ui-faint);
+}
+.nav a.on .k{ background: color-mix(in srgb, var(--ui-brand) 18%, transparent); color:var(--ui-brand); }
+
+.legend{ padding:12px 14px 14px; display:flex; flex-direction:column; gap:9px; }
+.legend .row{ display:flex; align-items:center; gap:9px; font-size:12px; color:var(--ui-dim); }
+.legend .sw{ width:14px; height:14px; border-radius:4px; flex:none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
+.legend .row b{ margin-left:auto; color:var(--ui-text); font-weight:500; font-size:11.5px;
+                font-family: ui-monospace, Consolas, monospace; }
+
+.canvas-tools{
+  display:flex; align-items:center; gap:8px;
+  padding:10px 12px; border-bottom:1px solid var(--ui-line);
+  background:var(--ui-raised);
+}
+.seg{ display:inline-flex; background:var(--ui-bg); border:1px solid var(--ui-line); border-radius:var(--r-sm); padding:2px; }
+.seg button{
+  appearance:none; border:0; background:transparent; font:inherit; font-size:12px;
+  color:var(--ui-dim); padding:4px 11px; border-radius:4px; cursor:pointer;
+  font-variant-numeric: tabular-nums;
+}
+.seg button:hover{ color:var(--ui-text); }
+.seg button.on{ background:var(--ui-brand-bg); color:var(--ui-brand); font-weight:500; }
+.canvas-tools .right{ margin-left:auto; display:flex; gap:12px; color:var(--ui-faint); font-size:11.5px; }
+.canvas-tools .right code{ color:var(--ui-dim); font-family: ui-monospace, Consolas, monospace; }
+
+.canvas{
+  position:relative; display:grid; place-items:center;
+  padding:44px; min-height:420px; overflow:auto;
+  background: radial-gradient(120% 90% at 50% 0%, #ffffff 0%, #f4f4f8 55%, #eeeef4 100%);
+}
+body[data-theme="dark"] .canvas{
+  background: radial-gradient(120% 90% at 50% 0%, #171a21 0%, #0e1013 60%, #0b0c10 100%);
+}
+.canvas::before{
+  content:''; position:absolute; inset:0; pointer-events:none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--ui-text) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--ui-text) 5%, transparent) 1px, transparent 1px);
+  background-size:24px 24px, 24px 24px;
+  mask-image: radial-gradient(80% 70% at 50% 45%, #000 40%, transparent 100%);
+}
+.zoomwrap{ position:relative; transform-origin:center center; z-index:1; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   游戏面板 —— 从这里开始是"进游戏后真实存在的东西"
+   描边一律用 inset box-shadow:border 会把盒子撑成 (w+2)×(h+2),就不等于游戏尺寸了。
+   面板"凸"(上左亮、下右暗)、槽位"凹"(上左暗、下右亮)—— 方向相反,这是原版 GUI 的关键。
+   ══════════════════════════════════════════════════════════════════════════ */
+.gui{
+  position:relative;
+  width:var(--panel-w); height:var(--panel-h);
+  background:var(--c-panel-face);
+  box-shadow:
+    inset 1px 1px 0 0 var(--c-panel-inner),
+    inset -1px -1px 0 0 var(--c-panel-shadow),
+    inset 0 0 0 1px var(--c-panel-border),
+    0 10px 30px rgba(20,20,28,.18), 0 2px 6px rgba(20,20,28,.08);
+  font-family: var(--panel-font, "Sarasa Mono SC", "Consolas", "Microsoft YaHei", monospace);
+  font-size:9px; line-height:9px; color:var(--c-text);
+  letter-spacing:.2px; user-select:none;
+}
+.gui.pixelated{ -webkit-font-smoothing:none; font-smooth:never; }
+
+/* ── 槽位:凹陷 ── */
+.slot{
+  position:absolute; width:var(--slot-frame); height:var(--slot-frame);
+  background:var(--c-slot-face);
+  box-shadow:
+    inset 1px 1px 0 0 var(--c-panel-border),
+    inset -1px -1px 0 0 var(--c-panel-inner),
+    inset 0 0 0 1px var(--c-panel-border);
+}
+.slot > img{ position:absolute; left:1px; top:1px; width:16px; height:16px; image-rendering:pixelated; }
+#bladeSlot{ left:var(--blade-slot-x); top:var(--blade-slot-y); }
+#fuelSlot { left:var(--fuel-slot-x);  top:var(--fuel-slot-y);  }
+
+/* ── 火焰:逐像素掩码(与 Java 的 buildFlameOuter/FLAME_INNER 同一份形状) ── */
+.flame{ position:absolute; left:var(--flame-x); top:var(--flame-y); width:1px; height:1px; }
+.flame i{ position:absolute; width:1px; height:1px; background:var(--c-flame-out); }
+.flame i.in{ background:var(--c-flame-in); }
+.flame.off i{ background:var(--c-flame-off); }
+
+/* ── 能量读数:槽列右边,右对齐 160 ── */
+#energyValue{
+  position:absolute; right: calc(var(--panel-w) - 160px - 1px); top:var(--energy-y);
+  color:var(--c-text); white-space:nowrap;
+}
+
+/* ── 缓冲条:深色凹槽 + 亮色填充(见 Java 里"为什么没有箭头"的说明) ── */
+.bar{
+  position:absolute; background:var(--c-track);
+  box-shadow: inset 0 0 0 1px var(--c-panel-border);
+}
+.bar > .fill{ position:absolute; left:1px; top:1px; bottom:1px; background:var(--c-accent); }
+.bar > .fill.ok{ background:var(--c-ok); }
+.bar > .fill.error{ background:var(--c-error); }
+#bufGauge{ left:var(--buf-gauge-x); top:var(--buf-gauge-y);
+           width:var(--buf-gauge-w); height:var(--buf-gauge-h); }
+
+/* ── 背包 / 快捷栏 ── */
+#invLabel{ position:absolute; top:calc(var(--inv-y) - 11px); left:var(--inv-x);
+           color:var(--c-label); white-space:nowrap; }
+.invslot{
+  position:absolute; width:var(--slot-frame); height:var(--slot-frame);
+  background:var(--c-slot-face);
+  box-shadow:
+    inset 1px 1px 0 0 var(--c-panel-border),
+    inset -1px -1px 0 0 var(--c-panel-inner),
+    inset 0 0 0 1px var(--c-panel-border);
+}
+.invslot > img{ position:absolute; left:1px; top:1px; width:16px; height:16px; image-rendering:pixelated; }
+
+/* 标注(仅设计用) */
+.guide{ position:absolute; pointer-events:none; opacity:0; transition:opacity .15s; }
+body.guides .guide{ opacity:1; }
+.guide.h{ height:1px; background:#d94a4a; }
+.guide.v{ width:1px; background:#2a5f8f; }
+.guide .t{
+  position:absolute; font:600 9px/1 ui-monospace, Consolas, monospace;
+  color:#a32a2a; background:var(--ui-surface);
+  border:1px solid #d94a4a; padding:2px 5px; border-radius:3px; white-space:nowrap;
+}
+.guide.v .t{ color:#2a5f8f; border-color:#2a5f8f; }
+
+.field{ padding:11px 14px; border-bottom:1px solid var(--ui-line); }
+.field:last-child{ border-bottom:0; }
+.field .head{ display:flex; align-items:baseline; gap:8px; margin-bottom:8px; }
+.field .head label{ font-size:12px; }
+.field .head .v{
+  margin-left:auto; font:600 11px/1 ui-monospace, Consolas, monospace;
+  color:var(--ui-brand); background:var(--ui-brand-bg);
+  padding:3px 6px; border-radius:4px; min-width:44px; text-align:right;
+}
+.field .desc{ font-size:11px; color:var(--ui-faint); margin-top:7px; line-height:1.45; }
+
+input[type=range]{ -webkit-appearance:none; appearance:none; width:100%; height:18px;
+                   background:transparent; cursor:pointer; }
+input[type=range]::-webkit-slider-runnable-track{ height:4px; border-radius:2px; background:var(--ui-line-2); }
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; width:14px; height:14px; border-radius:50%;
+  background:var(--ui-brand); border:2px solid var(--ui-surface);
+  margin-top:-5px; box-shadow:0 0 0 1px var(--ui-brand);
+}
+
+.switch{ display:flex; align-items:center; gap:9px; cursor:pointer; padding:5px 0; }
+.switch input{ display:none; }
+.switch .track{ width:32px; height:18px; border-radius:9px; background:var(--ui-line-2);
+                position:relative; transition:background .16s; flex:none; }
+.switch .track::after{
+  content:''; position:absolute; left:2px; top:2px; width:14px; height:14px;
+  border-radius:50%; background:var(--ui-surface); box-shadow:0 1px 2px rgba(0,0,0,.25);
+  transition:transform .16s, background .16s;
+}
+.switch input:checked + .track{ background:var(--ui-brand); }
+.switch input:checked + .track::after{ transform:translateX(14px); background:#fff; }
+.switch span{ font-size:12px; color:var(--ui-dim); }
+
+.spec{ display:grid; gap:1px; background:var(--ui-line); border-radius:var(--r-sm); overflow:hidden; max-height:340px; overflow-y:auto; }
+.spec .r{ display:flex; align-items:center; gap:10px; background:var(--ui-surface); padding:6px 10px; font-size:11.5px; }
+.spec .r span{ color:var(--ui-faint); }
+.spec .r b{ margin-left:auto; font:500 11px/1 ui-monospace, Consolas, monospace; color:var(--ui-text); }
+.spec .r.ok b{ color:var(--c-ok); }
+.spec .r.bad{ background:#fdf0f0; }
+.spec .r.bad b{ color:var(--c-error); }
+body[data-theme="dark"] .spec .r.bad{ background:#2a1414; }
+
+.foot{ padding:0 20px 28px; color:var(--ui-faint); font-size:11.5px; text-align:center; }
+.foot code{ color:var(--ui-dim); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="dot"></div>
+    <div><b>拔刀剑充能器</b> <span>界面规范 · v7 熔炉式经典</span></div>
+  </div>
+  <div class="spacer"></div>
+  <div class="badge"><i></i> 与 Java 常量同步</div>
+  <div class="badge">面板 176 × 166</div>
+  <button class="themebtn" id="themeBtn">切换深色</button>
+</header>
+
+<div class="layout">
+  <aside>
+    <section class="card">
+      <header>结构</header>
+      <nav class="nav">
+        <a href="#" class="on"><span class="k">01</span> 输入槽(刀)</a>
+        <a href="#"><span class="k">02</span> 火焰 + 燃料槽</a>
+        <a href="#"><span class="k">03</span> 箭头 + 能量读数</a>
+        <a href="#"><span class="k">04</span> 缓冲条</a>
+        <a href="#"><span class="k">05</span> 玩家背包 + 快捷栏</a>
+      </nav>
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <header>配色令牌 <span class="tag">原版 GUI</span></header>
+      <div class="legend">
+        <div class="row"><i class="sw" style="background:#373737"></i> 外框 <b>#373737</b></div>
+        <div class="row"><i class="sw" style="background:#ffffff"></i> 内白 <b>#FFFFFF</b></div>
+        <div class="row"><i class="sw" style="background:#555555"></i> 内暗 <b>#555555</b></div>
+        <div class="row"><i class="sw" style="background:#c6c6c6"></i> 面板底 <b>#C6C6C6</b></div>
+        <div class="row"><i class="sw" style="background:#8b8b8b"></i> 槽内底 <b>#8B8B8B</b></div>
+        <div class="row"><i class="sw" style="background:#2e2e2e"></i> 仪表凹槽 <b>#2E2E2E</b></div>
+        <div class="row"><i class="sw" style="background:#303030"></i> 主文字 <b>#303030</b></div>
+        <div class="row"><i class="sw" style="background:#a8d0ec"></i> 缓冲填充 <b>#A8D0EC</b></div>
+        <div class="row"><i class="sw" style="background:#a83a08"></i> 外焰 <b>#A83A08</b></div>
+        <div class="row"><i class="sw" style="background:#f5c542"></i> 内焰 <b>#F5C542</b></div>
+        <div class="row"><i class="sw" style="background:#a8e0b0"></i> 已满 <b>#A8E0B0</b></div>
+        <div class="row"><i class="sw" style="background:#e8d0a8"></i> 偏低 <b>#E8D0A8</b></div>
+        <div class="row"><i class="sw" style="background:#f0a8a8"></i> 无电 <b>#F0A8A8</b></div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <header>和熔炉的关系</header>
+      <div class="legend">
+        <div class="row" style="display:block;color:var(--ui-faint);font-size:11px;line-height:1.5">
+          两个机器槽的坐标与熔炉<b style="color:var(--ui-text)">逐个像素相同</b>:刀槽 (26,20)、
+          燃料槽 (26,46)。用法也一样 —— 上面放要加工的东西、下面放燃料。<br><br>
+          面板 176×166,与熔炉、箱子同一尺寸。上一版的 176×184 是给 AE2 面板留的位置,
+          这一版不需要了。
+        </div>
+      </div>
+    </section>
+  </aside>
+
+  <section class="card">
+    <div class="canvas-tools">
+      <div class="seg" id="zoomSeg">
+        <button data-z="1">1×</button>
+        <button data-z="2" class="on">2×</button>
+        <button data-z="3">3×</button>
+        <button data-z="4">4×</button>
+      </div>
+      <div class="right">
+        <span>面板 <code id="panelDim">176 × 166</code></span>
+        <span>显示 <code id="shownDim">352 × 332</code></span>
+      </div>
+    </div>
+    <div class="canvas">
+      <div class="zoomwrap" id="zoomwrap">
+        <div class="gui" id="gui">
+          <div class="slot" id="bladeSlot"><img id="bladeImg" alt=""></div>
+          <div class="slot" id="fuelSlot"></div>
+          <div class="flame" id="flameIcon"></div>
+
+          <!-- 缓冲条:机器区右侧那块凹槽 + 亮色填充 -->
+          <div class="bar" id="bufGauge"><div class="fill" style="width:8%"></div></div>
+
+          <!-- 能量读数:右对齐到 160 -->
+          <div id="energyValue">691/800</div>
+
+          <div id="invLabel">物品栏</div>
+          <div id="invSlots"></div>
+          <div id="guides"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="card inspector">
+    <header>调节 <span class="tag">改完我抄回 Java</span></header>
+
+    <div class="field">
+      <div class="head"><label>火焰状态</label><span class="v" id="vFlame">点火</span></div>
+      <label class="switch"><input type="checkbox" id="cFlame" checked><span class="track"></span><span>正在烧虞美人</span></label>
+      <div class="desc">不点火时那个位置只剩一层极淡的影子(原版熔炉的火焰位也是这样的暗底),
+        这样"点着 / 没点着"一眼能分清。</div>
+    </div>
+
+    <div class="field">
+      <div class="head"><label for="rFuel">燃烧进度</label><span class="v" id="vFuel">80%</span></div>
+      <input type="range" id="rFuel" min="0" max="100" value="80">
+      <div class="desc">烧过一半之后内焰(亮黄)才出现 —— 它顺带成了进度指示。</div>
+    </div>
+
+    <div class="field">
+      <div class="head"><label for="rBuf">缓冲填充</label><span class="v" id="vBuf">8%</span></div>
+      <input type="range" id="rBuf" min="0" max="100" value="8">
+      <div class="desc">条内不写数字:数值走悬停提示,版面上只留刀的能量那一个数。</div>
+    </div>
+
+    <div class="field">
+      <label class="switch"><input type="checkbox" id="cGuides"><span class="track"></span><span>显示标注线</span></label>
+      <label class="switch"><input type="checkbox" id="cPixel"><span class="track"></span><span>面板文字点阵化</span></label>
+    </div>
+
+    <div class="field">
+      <div class="head"><label>自检</label><span class="v" id="vCheck">—</span></div>
+      <div class="spec" id="spec"></div>
+      <div class="desc" id="contrastNote"></div>
+    </div>
+  </aside>
+</div>
+
+<div class="foot">
+  本页位置与 <code>BladeChargerScreen.java</code> 使用同一批数值,由 <code>design/check_mockup.js</code> 校验。
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   贴图(项目内 16×16 PNG,base64 内嵌)
+   ════════════════════════════════════════════════════════════════════════ */
+const IMG_BLADE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAU0lEQVR4XmNgGAjAxyf0H4TRxYkCII1fvv8nzwCY5mt3XpFuALJm/2svSDNgVDO9NZ9eaAPHJGuu0tP77ywpA6ZJ0gwCIA1kawYBkCZkjC5PMwAAGNaJBpsk0wcAAAAASUVORK5CYII=';
+const IMG_BLOCK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAATUlEQVR4XmNgoAbg4xP6v3PPMZIwSA+GAVZ2HkRh2hpw7c4rvJgoA0B8bJgkA+wfdKHgUQPIMAAbJtoAfBivAXl5VURhrAaQg+EGUAIA6+24FOlwK8sAAAAASUVORK5CYII=';
+const IMG_CELL  = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAC1UlEQVR4XoWSaUiUYRSFZ9yaMS2iBYwiqIigCFqoBFtQccmlaZmsrIkGK3EhkswJMzQzK7JMnUxowDYxSw0ZyrGyH21GmyZh7pZZai6TOjaJ3/f0hUQqYufP++Nyn/fcw5HJxpHBcSv50/dyXrmR0bNxlaoMIMtZjTXhEb9ae+g1lHPJcfP/ISkKfy5PVmN+XIc5uRRr2G0q/U5hDc+nK/MFSQq/sSHnlH6kO22iPSSHTlMVwpPPfHCNo3LlUXoO5/Bq6WEsEXeo35BKosJrJCRB4UOLrogG7zSEKCO1uzPoDs5moLiO/rNPER4206cvo871BO2Bet6vSyZ2guc/SKKDLzUBFxhMfoaoe0Cb6hKD9xsRG3oRP3YjNklvtZn+xFLKlhyifVMW5R6niVG6D0HOKP1pS39Es/Yq4t1GBsONCNeqEL/0I9abERv/AHoRbtRRseo4XWoDvyRn5f4paG2X9ctSJqoQartojbhGd9JDBH0FFk0OQvEXxM8WxLddiA86EApb6Am+ys+DBbxTp/Nm/Ul2yZcgOy0l/zXlPqKpmg6tge9HirDq7tG3+zrC7VoGdKWIaW8YzHzNB8l61XY9NycFcWvKDrbJFyPT2a+3Frjsoe1iCUJRJU1BaXREF2KJzMdyIA9zaB41galUB5wnQypUltMWCqdpKJ4ZIgEWDeUQbe/GvZlaOrKfI5g+8mlbOj1xJjrD79AQkcv1yUHkTQ0mxtaTY/Y+5M7QYJy9n61/AX8UY7+GktkH+GGsRHzxidrV8bxcGMll582UrIiiYLqGo3beRNt5Emm3ljgHLwJtF47sRKzDOkrnhGIua6RmVTxl88LIcFbxLS6XDCeVBPBip81y3OWz2GizYOxWHpHOuTJpCyaXEIzTdnFBCjlTgkTauOErLXnYzht7cbj2Sb8YnNToFSq08pX4yufjYTP3/4vDpZEvRS1bjJtkd/RsuH4DTcrXzBwZvBkAAAAASUVORK5CYII=';
+document.getElementById('bladeImg').src = IMG_BLADE;
+
+/* ════════════════════════════════════════════════════════════════════════
+   图标掩码 —— 形状用循环算,与 Java 的 buildFlameOuter 一一对应
+   ════════════════════════════════════════════════════════════════════════ */
+const pack = (x, y) => x * 1000 + y;
+const unpack = v => [Math.floor(v / 1000), v % 1000];
+/* 第 y 行上的两段 [fromA..toA] 与 [fromB..toB] */
+const row = (fromA, toA, fromB, toB, y) => {
+  const out = [];
+  for (let x = fromA; x <= toA; x++) out.push(pack(x, y));
+  for (let x = fromB; x <= toB; x++) out.push(pack(x, y));
+  return out;
+};
+const block = (fromX, toX, fromY, toY) => {
+  const out = [];
+  for (let y = fromY; y <= toY; y++) for (let x = fromX; x <= toX; x++) out.push(pack(x, y));
+  return out;
+};
+
+const FLAME_OUTER = [].concat(
+  row(5, 6, 1, 1, 2),
+  row(4, 6, 2, 2, 3),
+  row(4, 7, 3, 3, 4),
+  row(3, 8, 3, 3, 6),
+  row(2, 8, 4, 4, 7),
+  row(1, 9, 5, 5, 9),
+  row(1, 10, 6, 6, 10),
+  row(0, 10, 7, 7, 11),
+  row(0, 10, 8, 8, 11),
+  row(0, 11, 9, 9, 12),
+  row(0, 11, 10, 10, 12));
+
+const FLAME_INNER = [].concat(
+  row(4, 7, 8, 8, 9),
+  row(0, 9, 11, 11, 12),
+  row(0, 10, 11, 11, 12));
+
+/* 本版没有进度箭头:见 Java 里 BUFFER_Y 的说明 —— 亮填充与亮箭头必然同色系,推进前沿读不出来。
+   熔炉那支箭头能读,是因为它的原版形态是贴图里的空心轮廓。 */
+
+function paint(host, pixels, extraClass){
+  host.innerHTML = pixels.map(v => {
+    const [x, y] = unpack(v);
+    return `<i class="${extraClass || ''}" style="left:${x}px;top:${y}px"></i>`;
+  }).join('');
+}
+paint(document.getElementById('flameIcon'), FLAME_OUTER);
+
+/* ════════════════════════════════════════════════════════════════════════
+   背包 / 快捷栏(与 Java 的 BladeChargerMenu 同一套坐标算法)
+   ════════════════════════════════════════════════════════════════════════ */
+const INV_X = 8, INV_STEP = 18, HOTBAR_OFFSET = 54;
+function buildInventory(invY){
+  const host = document.getElementById('invSlots');
+  host.innerHTML = '';
+  const hotY = invY + HOTBAR_OFFSET;
+  const hotIcons = [null, IMG_BLADE, IMG_CELL, null, IMG_BLOCK, null, IMG_BLADE, IMG_CELL, null];
+  for (let r = 0; r < 3; r++){
+    for (let c = 0; c < 9; c++){
+      const d = document.createElement('div');
+      d.className = 'invslot';
+      d.style.left = (INV_X + c * INV_STEP) + 'px';
+      d.style.top  = (invY + r * INV_STEP) + 'px';
+      if (r === 0 && c === 7) d.innerHTML = `<img src="${IMG_BLOCK}">`;
+      if (r === 1 && c === 1) d.innerHTML = `<img src="${IMG_BLADE}">`;
+      host.appendChild(d);
+    }
+  }
+  for (let c = 0; c < 9; c++){
+    const d = document.createElement('div');
+    d.className = 'invslot';
+    d.style.left = (INV_X + c * INV_STEP) + 'px';
+    d.style.top  = hotY + 'px';
+    if (hotIcons[c]) d.innerHTML = `<img src="${hotIcons[c]}">`;
+    host.appendChild(d);
+  }
+  return hotY;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   自检:面板内 + 两两不重叠 + 对比度(与 Java 的 RECTS / checkPairwise 同一份规则)
+   ════════════════════════════════════════════════════════════════════════ */
+const rootStyle = document.documentElement.style;
+const cssNum = n => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(n)) || 0;
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function buildGuides(){
+  const g = document.getElementById('guides');
+  g.innerHTML = '';
+  const PW = cssNum('--panel-w'), PH = cssNum('--panel-h');
+  const h = (y, text) => {
+    const d = document.createElement('div');
+    d.className = 'guide h';
+    d.style.cssText = `left:0;width:${PW}px;top:${y}px`;
+    d.innerHTML = `<span class="t" style="left:${PW + 5}px;top:-6px">${text} · y=${y}</span>`;
+    g.appendChild(d);
+  };
+  const v = (x, text) => {
+    const d = document.createElement('div');
+    d.className = 'guide v';
+    d.style.cssText = `top:0;height:${PH}px;left:${x}px`;
+    d.innerHTML = `<span class="t" style="left:4px;top:4px">${text} · x=${x}</span>`;
+    g.appendChild(d);
+  };
+  v(cssNum('--blade-slot-x'), '槽列');
+  v(160, '数值右边界');
+  h(cssNum('--blade-slot-y'), '刀槽');
+  h(cssNum('--fuel-slot-y'), '燃料槽');
+  h(cssNum('--energy-y'), '能量读数');
+  h(cssNum('--buf-gauge-y'), '缓冲条');
+  h(cssNum('--inv-y'), '背包首行');
+  h(cssNum('--inv-y') + HOTBAR_OFFSET, '快捷栏');
+}
+
+function srgb(c){ c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+function luminance(hex){
+  const h = hex.replace('#','');
+  return 0.2126*srgb(parseInt(h.slice(0,2),16))
+       + 0.7152*srgb(parseInt(h.slice(2,4),16))
+       + 0.0722*srgb(parseInt(h.slice(4,6),16));
+}
+function contrast(a, b){
+  const la = luminance(a), lb = luminance(b);
+  return (Math.max(la,lb) + 0.05) / (Math.min(la,lb) + 0.05);
+}
+
+function rects(){
+  const v = cssNum;
+  return [
+    { n:'刀槽',      x:v('--blade-slot-x') - 1, y:v('--blade-slot-y') - 1, w:18, h:18 },
+    { n:'虞美人槽',  x:v('--fuel-slot-x') - 1,  y:v('--fuel-slot-y') - 1,  w:18, h:18 },
+    { n:'火焰',      x:v('--flame-x'), y:v('--flame-y'), w:12, h:11 },
+    { n:'能量读数',  x:84, y:v('--energy-y'), w:160 - 84, h:9 },
+    { n:'缓冲条',    x:v('--buf-gauge-x'), y:v('--buf-gauge-y'), w:v('--buf-gauge-w'), h:v('--buf-gauge-h') },
+    { n:'物品栏标签',x:v('--inv-x'), y:v('--inv-y') - 11, w:40, h:9 },
+    { n:'玩家背包块',x:v('--inv-x') - 1, y:v('--inv-y') - 1,
+                     w:9 * INV_STEP, h:(v('--inv-y') + HOTBAR_OFFSET + 17) - (v('--inv-y') - 1) + 1 },
+  ];
+}
+/* 设计上必然重叠的一对:火焰的下沿压在燃料槽上边框上(与 Java 的 isExpectedOverlap 一致) */
+const EXPECTED = new Set(['火焰|虞美人槽', '虞美人槽|火焰']);
+const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+function runGeometryCheck(){
+  const PW = cssNum('--panel-w'), PH = cssNum('--panel-h');
+  const R = rects(), rows = [];
+  let bad = 0;
+  R.forEach(r => {
+    const fit = r.x >= 0 && r.y >= 0 && r.x + r.w <= PW && r.y + r.h <= PH;
+    if (!fit) bad++;
+    rows.push([`${r.n} 在面板内`, `${r.x},${r.y} → ${r.x + r.w},${r.y + r.h}`, fit]);
+  });
+  for (let i = 0; i < R.length; i++){
+    for (let j = i + 1; j < R.length; j++){
+      if (EXPECTED.has(`${R[i].n}|${R[j].n}`)) continue;
+      const hit = overlaps(R[i], R[j]);
+      if (hit) bad++;
+      rows.push([`${R[i].n} ⇄ ${R[j].n}`, hit ? '重叠' : '不重叠', !hit]);
+    }
+  }
+  return { bad, rows };
+}
+
+function runContrastCheck(){
+  const face = cssVar('--c-panel-face'), track = cssVar('--c-track');
+  const pairs = [
+    ['主文字 / 面板底',   cssVar('--c-text'),     face,  4.5],
+    ['次要文字 / 面板底', cssVar('--c-label'),    face,  4.5],
+    ['外焰 / 面板底',     cssVar('--c-flame-out'),face,  3.0],
+    ['槽内底 / 面板底',   cssVar('--c-slot-face'),face,  1.15],
+    ['凹槽 / 面板底',     track,                  face,  3.0],
+    /* 仪表内部:填充压在**深凹槽**上,所以用亮色 —— 与本页文字方向相反(文字压浅底) */
+    ['缓冲填充 / 凹槽',   cssVar('--c-accent'),   track, 3.0],
+    ['已满色 / 凹槽',     cssVar('--c-ok'),       track, 3.0],
+    ['偏低色 / 凹槽',     cssVar('--c-low'),      track, 3.0],
+    ['无电色 / 凹槽',     cssVar('--c-error'),    track, 3.0],
+    /* 悬停提示是深色底,状态文字压在它上面(#202020 近似原版 tooltip 底色) */
+    ['已满色 / 提示底',   cssVar('--c-ok'),       '#202020', 4.5],
+    ['无电色 / 提示底',   cssVar('--c-error'),    '#202020', 4.5],
+  ];
+  let bad = 0, worst = 99, rows = [];
+  pairs.forEach(([name, fg, bg, min]) => {
+    const c = contrast(fg, bg);
+    const pass = c >= min;
+    if (!pass) bad++;
+    worst = Math.min(worst, c / min);
+    rows.push([name, `${c.toFixed(2)}:1 (≥${min})`, pass]);
+  });
+  return { bad, rows, worst };
+}
+
+function refresh(){
+  buildInventory(cssNum('--inv-y'));
+  buildGuides();
+  const geo = runGeometryCheck(), con = runContrastCheck();
+  const spec = document.getElementById('spec');
+  spec.innerHTML = '';
+  const add = ([name, val, pass]) => {
+    const r = document.createElement('div');
+    r.className = 'r ' + (pass ? 'ok' : 'bad');
+    r.innerHTML = `<span>${name}</span><b>${val}${pass ? '' : ' ✗'}</b>`;
+    spec.appendChild(r);
+  };
+  con.rows.forEach(add);
+  geo.rows.forEach(add);
+  const total = geo.bad + con.bad;
+  const badge = document.getElementById('vCheck');
+  badge.textContent = total === 0 ? 'OK' : total + ' 处不通过';
+  badge.style.color = total === 0 ? 'var(--c-ok)' : 'var(--c-error)';
+  document.getElementById('contrastNote').textContent = total === 0
+    ? `几何 ${geo.rows.length} 条全过(含两两不重叠);对比度最紧一项为阈值的 ${con.worst.toFixed(2)} 倍。`
+    : '有不通过项,见上面红行。';
+  const gui = document.getElementById('gui');
+  document.getElementById('panelDim').textContent = `${gui.offsetWidth} × ${gui.offsetHeight}`;
+  document.getElementById('shownDim').textContent = `${gui.offsetWidth * ZOOM} × ${gui.offsetHeight * ZOOM}`;
+  return total;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   交互
+   ════════════════════════════════════════════════════════════════════════ */
+let ZOOM = 2;
+function applyZoom(){
+  const gui = document.getElementById('gui'), wrap = document.getElementById('zoomwrap');
+  wrap.style.transform = `scale(${ZOOM})`;
+  wrap.style.width  = gui.offsetWidth + 'px';
+  wrap.style.height = gui.offsetHeight + 'px';
+  document.querySelector('.canvas').style.minHeight = (gui.offsetHeight * ZOOM + 88) + 'px';
+  refresh();
+}
+document.getElementById('zoomSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#zoomSeg button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); ZOOM = +b.dataset.z; applyZoom();
+});
+
+/* 火焰:点火 / 熄灭,以及内焰(烧过一半才亮) */
+const flameHost = document.getElementById('flameIcon');
+function updateFlame(){
+  const on = document.getElementById('cFlame').checked;
+  const pct = +document.getElementById('rFuel').value;
+  document.getElementById('vFlame').textContent = on ? '点火' : '熄灭';
+  document.getElementById('vFuel').textContent = pct + '%';
+  flameHost.classList.toggle('off', !on);
+  paint(flameHost, FLAME_OUTER);
+  if (on && pct >= 50) {
+    const extra = FLAME_INNER.map(v => {
+      const [x, y] = unpack(v);
+      return `<i class="in" style="left:${x}px;top:${y}px"></i>`;
+    }).join('');
+    flameHost.insertAdjacentHTML('beforeend', extra);
+  }
+}
+document.getElementById('cFlame').addEventListener('change', updateFlame);
+document.getElementById('rFuel').addEventListener('input', updateFlame);
+document.getElementById('rBuf').addEventListener('input', e => {
+  document.querySelector('#bufGauge .fill').style.width = e.target.value + '%';
+  document.getElementById('vBuf').textContent = e.target.value + '%';
+});
+document.getElementById('cGuides').addEventListener('change', e =>
+  document.body.classList.toggle('guides', e.target.checked));
+document.getElementById('cPixel').addEventListener('change', e =>
+  document.getElementById('gui').classList.toggle('pixelated', e.target.checked));
+
+let theme = 'light';
+document.getElementById('themeBtn').addEventListener('click', e => {
+  theme = theme === 'light' ? 'dark' : 'light';
+  if (theme === 'dark') document.body.dataset.theme = 'dark';
+  else delete document.body.dataset.theme;
+  e.target.textContent = theme === 'light' ? '切换深色' : '切换浅色';
+  refresh();
+});
+
+window.__mockupSelfCheck = () => refresh();
+updateFlame();
+refresh();
+applyZoom();
+</script>
+</body>
+</html>

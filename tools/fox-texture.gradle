@@ -1,0 +1,900 @@
+// ============================================================================
+// 「莉莉」贴图工程:白狐(sange)模型的 UV 区域图 + 自有贴图合成
+// ----------------------------------------------------------------------------
+// 为什么要这两个任务:
+//   莉莉的**模型**运行时引用重锋本体的 slashblade:model/named/sange/sange.obj(不复制、不修改 ⇒ 合规),
+//   但那张 white.png 是重锋的 ARR 素材,我们要换成**自己画的贴图**。
+//   而白狐的贴图是 UV 图集(192×384,各部件的 UV 岛分散分布),AI 出图不会自己摆到正确像素上 ⇒
+//   必须:①先把"哪个岛属于哪个部件"量出来(uv-map);②再按区域表把素材合进去(foxTexture)。
+//
+// 任务:
+//   gradlew foxUvMap    —— 出 UV 区域图 + 区域表 + 布局指纹(先给用户确认部件对应)
+//   gradlew foxTexture  —— 按区域表合成我们自己的贴图(第二步)
+// ============================================================================
+
+import java.util.Locale
+import java.util.zip.ZipFile
+
+final String FOX_MODEL_ENTRY = 'assets/slashblade/model/named/sange/sange.obj'
+final String FOX_TEX_ENTRY = 'assets/slashblade/model/named/sange/white.png'
+
+/** 白狐模型/贴图的原始尺寸(UV 是归一化的,产物按整数倍放大)。 */
+class FoxLayout {
+    static final int SRC_W = 192
+    static final int SRC_H = 384
+    static final int SCALE = (System.getProperty('foxScale') ?: '5') as int
+    static final int OUT_W = SRC_W * SCALE
+    static final int OUT_H = SRC_H * SCALE
+}
+
+/** 从重锋 jar 里读模型,并解析出"每组的每个面 → 贴图像素多边形"。 */
+class FoxObj {
+    static List<String> readLines(File jarFile, String entry) {
+        def zip = new ZipFile(jarFile)
+        try {
+            def e = zip.getEntry(entry)
+            if (e == null) {
+                throw new IllegalStateException("${jarFile.name} 里没有 ${entry}")
+            }
+            return zip.getInputStream(e).getText('UTF-8').readLines()
+        } finally {
+            zip.close()
+        }
+    }
+
+    /**
+     * @return [groups: Map<String, List<List<int[]>>>, vtCount: int, faceCount: int]
+     *         每个面是像素坐标多边形(行 = 1-v,与重锋采样一致)
+     */
+    static Map parse(List<String> lines, int w, int h) {
+        def uvs = []
+        def groups = [:]
+        String current = null
+        int faceCount = 0
+        lines.each { line ->
+            if (line.startsWith('g ')) {
+                current = line.substring(2).trim()
+                if (!groups.containsKey(current)) {
+                    groups[current] = []
+                }
+            } else if (line.startsWith('vt ')) {
+                def p = line.split(' ')
+                uvs << ([p[1] as double, p[2] as double])
+            } else if (line.startsWith('f ') && current != null) {
+                def poly = []
+                line.split(' ').drop(1).each { tok ->
+                    def bits = tok.split('/')
+                    if (bits.length > 1 && bits[1]) {
+                        def uv = uvs[(bits[1] as int) - 1]
+                        int px = (int) Math.round((uv[0] as double) * (w - 1))
+                        int py = (int) Math.round((1.0d - (uv[1] as double)) * (h - 1))
+                        poly << ([px, py] as int[])
+                    }
+                }
+                if (poly.size() >= 3) {
+                    groups[current] << poly
+                    faceCount++
+                }
+            }
+        }
+        return [groups: groups, vtCount: uvs.size(), faceCount: faceCount]
+    }
+}
+
+/** 把每组的 UV 多边形光栅化成掩码,并按调色板出一张"部件着色图"。 */
+class FoxUvMap {
+    static final int[] PALETTE = [
+            0xFFFF4D4D, 0xFF4DA6E6, 0xFF3FBF6A, 0xFFE6C34D, 0xFFB266E6, 0xFF3FE0D0,
+            0xFFE68A4D, 0xFF8AE64D, 0xFFE64DB2, 0xFF5A6BE6, 0xFFC8E64D, 0xFFE64DE6]
+
+    static boolean[] mask(List<List<int[]>> faces, int w, int h) {
+        def img = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_BYTE_GRAY)
+        def g = img.createGraphics()
+        g.setColor(java.awt.Color.BLACK)
+        g.fillRect(0, 0, w, h)
+        g.setColor(java.awt.Color.WHITE)
+        faces.each { poly ->
+            def xs = poly.collect { (it[0] as int) } as int[]
+            def ys = poly.collect { (it[1] as int) } as int[]
+            g.fillPolygon(xs, ys, xs.length)
+        }
+        g.dispose()
+        def out = new boolean[w * h]
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                out[y * w + x] = (img.getRGB(x, y) & 0xFF) > 128
+            }
+        }
+        return out
+    }
+
+    /** 掩码的连通岛数(4 邻域)。 */
+    static int islandCount(boolean[] mask, int w, int h) {
+        def seen = new boolean[w * h]
+        int islands = 0
+        def stack = new ArrayDeque<Integer>()
+        for (int i = 0; i < mask.length; i++) {
+            if (!mask[i] || seen[i]) {
+                continue
+            }
+            islands++
+            stack.push(i)
+            seen[i] = true
+            while (!stack.isEmpty()) {
+                int cur = stack.pop()
+                int cx = cur % w
+                int cy = (int) (cur / w)
+                [[1, 0], [-1, 0], [0, 1], [0, -1]].each { d ->
+                    int nx = cx + d[0]
+                    int ny = cy + d[1]
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                        int ni = ny * w + nx
+                        if (mask[ni] && !seen[ni]) {
+                            seen[ni] = true
+                            stack.push(ni)
+                        }
+                    }
+                }
+            }
+        }
+        return islands
+    }
+
+    /**
+     * 分格图:每组一格(白=该组占用的像素,深底),每格上方标组名/编号/占用像素/岛屿数。
+     *
+     * <p>为什么不做"一张叠加图":`effect`(发光层)占了整张贴图的约 75%,
+     * 后画的组会把先画的整个盖掉,叠加图基本只能看到最后一个组(实测踩过)。
+     */
+    static void render(File out, List<String> order, Map<String, boolean[]> masks, int w, int h,
+                       List<List<String>> legend, Map<String, Integer> islands) {
+        int cols = 2
+        int gap = 10
+        int labelH = 26
+        int rows = (int) Math.ceil(order.size() / (double) cols)
+        int cw = w + gap
+        int ch = h + labelH + gap
+        def big = new java.awt.image.BufferedImage(cols * cw + gap, rows * ch + gap,
+                java.awt.image.BufferedImage.TYPE_INT_RGB)
+        def g2 = big.createGraphics()
+        g2.setColor(new java.awt.Color(18, 18, 22))
+        g2.fillRect(0, 0, big.getWidth(), big.getHeight())
+        g2.setFont(new java.awt.Font('SansSerif', java.awt.Font.BOLD, 13))
+        order.eachWithIndex { grp, idx ->
+            int col = idx % cols
+            int row = (int) (idx / cols)
+            int ox = gap + col * cw
+            int oy = gap + row * ch
+            def mask = masks[grp]
+            int px = 0
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    if (mask[y * w + x]) {
+                        px++
+                        big.setRGB(ox + x, oy + labelH + y, new java.awt.Color(240, 240, 245).getRGB())
+                    } else {
+                        big.setRGB(ox + x, oy + labelH + y, new java.awt.Color(40, 40, 48).getRGB())
+                    }
+                }
+            }
+            g2.setColor(java.awt.Color.WHITE)
+            g2.drawString(String.format(Locale.ROOT, '%d %s  (%d px, %d 岛)', idx + 1, grp, px,
+                    islands[grp] == null ? 0 : islands[grp]), ox, oy + 18)
+            legend << ([String.format(Locale.ROOT, '%2d', idx + 1), grp, String.valueOf(px),
+                        String.valueOf(islands[grp] == null ? 0 : islands[grp])] as List<String>)
+        }
+        g2.dispose()
+        out.parentFile.mkdirs()
+        javax.imageio.ImageIO.write(big, 'png', out)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 任务:foxUvMap
+// ----------------------------------------------------------------------------
+// 倍数:-PfoxScale=5(默认);改完请重跑 foxUvMap / foxUvGuide / foxLocal\ndef foxJar = fileTree(dir: 'libs', include: ['slashblade-*.jar']).files.sort { it.name }.reverse().first()
+def foxUvDir = new File(project.projectDir, 'build/fox-uv')
+
+tasks.register('foxUvMap') {
+    group = 'applied slash tooling'
+    description = '出白狐(sange)模型的 UV 区域图 + 区域表 + 布局指纹(自有贴图合成的依据)'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读 jar 并写预览图')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        def lines = FoxObj.readLines(foxJar, FOX_MODEL_ENTRY)
+        // 按 192×384(白狐原始贴图)量区域,这是 UV 的归一化基准
+        def parsed = FoxObj.parse(lines, FoxLayout.SRC_W, FoxLayout.SRC_H)
+        def groups = parsed.groups as Map<String, List<List<int[]>>>
+        def order = groups.keySet().sort()
+        def masks = [:]
+        def legend = []
+        def islands = [:]
+        order.each { g ->
+            masks[g] = FoxUvMap.mask(groups[g], FoxLayout.SRC_W, FoxLayout.SRC_H)
+            islands[g] = FoxUvMap.islandCount(masks[g], FoxLayout.SRC_W, FoxLayout.SRC_H)
+        }
+        def mapFile = new File(foxUvDir, 'uv-map.png')
+        FoxUvMap.render(mapFile, order, masks, FoxLayout.SRC_W, FoxLayout.SRC_H, legend, islands)
+
+        // 区域表 + 指纹
+        def sb = new StringBuilder()
+        sb.append("# 白狐 sange.obj 的 UV 区域表(贴图 ${FoxLayout.SRC_W}×${FoxLayout.SRC_H};行 = 1-v)\n")
+        sb.append("# 编号  组名             占用像素  岛屿数  包围盒(x0,y0,x1,y1)          指纹\n")
+        order.eachWithIndex { g, idx ->
+            def mask = masks[g]
+            int px = 0
+            int x0 = FoxLayout.SRC_W
+            int x1 = -1
+            int y0 = FoxLayout.SRC_H
+            int y1 = -1
+            for (int y = 0; y < FoxLayout.SRC_H; y++) {
+                for (int x = 0; x < FoxLayout.SRC_W; x++) {
+                    if (mask[y * FoxLayout.SRC_W + x]) {
+                        px++
+                        x0 = Math.min(x0, x)
+                        x1 = Math.max(x1, x)
+                        y0 = Math.min(y0, y)
+                        y1 = Math.max(y1, y)
+                    }
+                }
+            }
+            int islandNum = islands[g] == null ? 0 : islands[g]
+            def fp = Integer.toHexString(java.util.Arrays.hashCode(mask))
+            sb.append(String.format(Locale.ROOT, "  %2d   %-16s %8d  %6d  [%3d,%3d,%3d,%3d]  %s%n",
+                    idx + 1, g, px, islandNum, x0, y0, x1, y1, fp))
+        }
+        new File(foxUvDir, 'uv-map.txt').setText(sb.toString(), 'UTF-8')
+        new File(foxUvDir, 'layout-fingerprint.txt').setText(
+                "# 白狐 UV 布局指纹(verifyResources 用它钉住布局;重锋升级重排 UV 时应报警)\n" +
+                        "# 模型: ${FOX_MODEL_ENTRY}\n" +
+                        "# 贴图: ${FOX_TEX_ENTRY}  ${FoxLayout.SRC_W}×${FoxLayout.SRC_H}\n" +
+                        sb.toString().readLines().findAll { it.startsWith('  ') }.join('\n') + '\n', 'UTF-8')
+
+        println '===== foxUvMap ====='
+        println "  来源      : ${foxJar.name}!${FOX_MODEL_ENTRY}"
+        println "  解析      : 分组 ${groups.size()} 个,面 ${parsed.faceCount},vt ${parsed.vtCount}"
+        println "  区域图    : ${mapFile}"
+        println "  区域表    : ${new File(foxUvDir, 'uv-map.txt')}"
+        println "  指纹      : ${new File(foxUvDir, 'layout-fingerprint.txt')}"
+        legend.each { row -> println "    #${row[0]}  ${row[1]}  占用 ${row[2]} px,${row[3]} 个岛" }
+        println '===== 结束(请先确认"色块 ↔ 部件",再跑 foxTexture)====='
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 任务:foxTexture —— 按区域表合成我们自己的贴图
+// ----------------------------------------------------------------------------
+def foxSourceDir = new File(project.projectDir, 'art/fox_source')
+def foxOutPng = new File(project.projectDir,
+        'src/main/resources/assets/applied_slash/models/lili/fox.png')
+
+tasks.register('foxTexture') {
+    group = 'applied slash tooling'
+    description = '用三张素材 + 程序绘制合成莉莉自有贴图(白狐模型 + 我们的贴图)'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读图并写资源文件')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        int W = FoxLayout.OUT_W
+        int H = FoxLayout.OUT_H
+        def srcSaya = javax.imageio.ImageIO.read(new File(foxSourceDir, 'saya_design.png'))
+        def srcWrap = javax.imageio.ImageIO.read(new File(foxSourceDir, 'tsuka_wrap.png'))
+        def srcTsuba = javax.imageio.ImageIO.read(new File(foxSourceDir, 'tsuba.png'))
+        [srcSaya, srcWrap, srcTsuba].eachWithIndex { im, i ->
+            if (im == null) {
+                throw new GradleException("素材读取失败(第 ${i + 1} 张):${foxSourceDir}")
+            }
+        }
+
+        // 1) 清洗水印:右下角一矩形改成左侧镜像内容(豆包水印是浅灰字压在背景上)
+        def cleanedTsuba = FoxTex.cleanCorner(srcTsuba, 0.19d, 0.10d)
+        def cleanedSaya = FoxTex.cleanCorner(srcSaya, 0.28d, 0.05d)
+
+        // 2) 底:把"刀鞘"设计镜像平铺铺满整张(effect 组采样全图,底不能空)
+        def canvas = FoxTex.tileBase(cleanedSaya, W, H)
+
+        // 3) 逐岛覆盖:UV 掩码驱动
+        def lines = FoxObj.readLines(foxJar, FOX_MODEL_ENTRY)
+        def parsed = FoxObj.parse(lines, W, H)
+        def groups = parsed.groups as Map<String, List<List<int[]>>>
+        def steel = FoxTex.steelCanvas(W, H)
+        def report = []
+        int strips = 0
+        int plates = 0
+        int diamonds = 0
+        int bars = 0
+        def kindImg = new java.awt.image.BufferedImage(W, H, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        def gk = kindImg.createGraphics()
+        gk.setColor(new java.awt.Color(30, 30, 36))
+        gk.fillRect(0, 0, W, H)
+        def claimed = [:]                      // 岛 → 已认领的世界组(图标组只补没人认领的岛)
+        def worldOrder = ['sheath', 'handle', 'blade_fragment', 'blade_damaged', 'blade']
+        def iconGroups = ['item_back', 'item_blade', 'item_bladens', 'item_damaged']
+        def paintOrder = worldOrder + iconGroups
+        paintOrder.each { g ->
+            if (groups[g] == null) { return }
+            boolean[] mask = FoxUvMap.mask(groups[g], W, H)
+            FoxTex.islands(mask, W, H).each { isl ->
+                // 岛的身份键(不用 GString 插值,避免脚本里被上层转义吃掉)
+                def key = isl.x0 + ',' + isl.y0 + ',' + isl.x1 + ',' + isl.y1 + ',' + isl.pixels.size()
+                boolean isWorld = worldOrder.contains(g)
+                if (!isWorld && claimed.containsKey(key)) { return }   // 图标组不覆盖世界组已认领的岛
+                if (isWorld) { claimed[key] = g }
+                def kind = FoxTex.classify(isl)
+                def source
+                int rgb
+                if (kind == 'strip') {
+                    if (g == 'handle') { source = srcWrap; rgb = 0xFFE6C34D }
+                    else if (g == 'sheath') { source = cleanedSaya; rgb = 0xFF4DC8E6 }
+                    else { source = steel; rgb = 0xFF9AA0A6 }
+                    strips++
+                } else if (kind == 'plate') {
+                    source = cleanedTsuba
+                    rgb = 0xFFE64D8A
+                    plates++
+                } else if (kind == 'diamond') {
+                    source = FoxTex.diamondTile(cleanedSaya, 128)
+                    rgb = 0xFF7A4DE6
+                    diamonds++
+                } else {
+                    source = FoxTex.solidTile(cleanedSaya, 32)
+                    rgb = 0xFF4DE68A
+                    bars++
+                }
+                FoxTex.blitIsland(canvas, isl, source)
+                gk.setColor(new java.awt.Color(rgb, true))
+                isl.pixels.each { idx -> gk.fillRect(idx % W, (int) (idx / W), 1, 1) }
+                report << ([g, kind, String.valueOf(isl.pixels.size()),
+                            "x[${isl.x0},${isl.x1}] y[${isl.y0},${isl.y1}]"] as List<String>)
+            }
+        }
+        gk.dispose()
+
+        // 4) 输出:RGB 三通道(天生零透明)
+        def out = new java.awt.image.BufferedImage(W, H, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        def go = out.createGraphics()
+        go.drawImage(canvas, 0, 0, null)
+        go.dispose()
+        def previewDir = new File(project.projectDir, 'build/fox-preview')
+        previewDir.mkdirs()
+        foxOutPng.parentFile.mkdirs()
+        javax.imageio.ImageIO.write(out, 'png', foxOutPng)
+        javax.imageio.ImageIO.write(out, 'png', new File(previewDir, 'fox-384x768.png'))
+        javax.imageio.ImageIO.write(kindImg, 'png', new File(previewDir, 'fox-parts.png'))
+
+        println '===== foxTexture ====='
+        println "  素材      : ${foxSourceDir}(刀鞘设计 / 柄卷 / 刀镡;右下角水印已镜像清洗)"
+        println "  产物      : ${foxOutPng}(${foxOutPng.length()} B)"
+        println "  尺寸      : ${W}×${H}(白狐原图 ${FoxLayout.SRC_W}×${FoxLayout.SRC_H} 的 ${FoxLayout.SCALE}×)"
+        println String.format(Locale.ROOT, '  岛分配    : 长条 %d / 镡(八边形) %d / 菱形 %d / 细条 %d(effect 组 = 底纹,不单独画)',
+                strips, plates, diamonds, bars)
+        println "  预览      : ${new File(previewDir, 'fox-384x768.png')}、fox-parts.png"
+        report.each { r -> println "    ${r[0]} ← ${r[1]}  ${r[2]} px  ${r[3]}" }
+        println '===== 结束(断言在 verifyResources:尺寸/零透明/逐岛覆盖/采样安全)====='
+    }
+}
+
+/** 合成用的小工具(静态方法:脚本顶层变量在静态方法里看不见)。 */
+class FoxTex {
+    static final class Island {
+        List<Integer> pixels = []
+        int x0 = Integer.MAX_VALUE
+        int y0 = Integer.MAX_VALUE
+        int x1 = -1
+        int y1 = -1
+    }
+
+    /** 4 邻域连通岛。 */
+    static List<Island> islands(boolean[] mask, int w, int h) {
+        def seen = new boolean[w * h]
+        def out = []
+        def stack = new ArrayDeque<Integer>()
+        for (int i = 0; i < mask.length; i++) {
+            if (!mask[i] || seen[i]) {
+                continue
+            }
+            def isl = new Island()
+            stack.push(i)
+            seen[i] = true
+            while (!stack.isEmpty()) {
+                int cur = stack.pop()
+                isl.pixels << cur
+                int cx = cur % w
+                int cy = (int) (cur / w)
+                isl.x0 = Math.min(isl.x0, cx)
+                isl.x1 = Math.max(isl.x1, cx)
+                isl.y0 = Math.min(isl.y0, cy)
+                isl.y1 = Math.max(isl.y1, cy)
+                [[1, 0], [-1, 0], [0, 1], [0, -1]].each { d ->
+                    int nx = cx + d[0]
+                    int ny = cy + d[1]
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                        int ni = ny * w + nx
+                        if (mask[ni] && !seen[ni]) {
+                            seen[ni] = true
+                            stack.push(ni)
+                        }
+                    }
+                }
+            }
+            out << isl
+        }
+        return out
+    }
+
+    /**
+     * 岛的类型判定(只靠几何量,不写死坐标):
+     *   strip   长条 h ≥ 3w      —— 刀身 / 柄卷 / 鞘身
+     *   bar     细条 w ≥ 3h      —— 顶部小件
+     *   plate   近方形且填充率 ≥ 0.70 —— 八边形 = 刀镡
+     *   diamond 近方形但填充率 < 0.70 —— 菱形饰件
+     */
+    static String classify(Island isl) {
+        int bw = isl.x1 - isl.x0 + 1
+        int bh = isl.y1 - isl.y0 + 1
+        double fill = isl.pixels.size() / (double) (bw * bh)
+        if (isl.pixels.size() < 250) {
+            return 'bar'                       // 顶部小件(实测 8~130 px)
+        }
+        if (bh >= 3 * bw) {
+            return 'strip'                     // 长条:刀身 / 柄卷 / 鞘身
+        }
+        if (bw >= 2.4d * bh) {
+            return 'bar'                       // 扁条(实测顶部小件 52x20 ⇒ 2.6,放宽到 2.4)
+        }
+        // 近方形的两块:小的那块(实测 2,744 px)= 八边形刀镡;大的那块(实测 11,858 px)= 菱形饰件
+        return isl.pixels.size() <= 4000 ? 'plate' : 'diamond'
+    }
+
+    /** 把某个岛用 source 覆盖:岛内像素按 bbox 归一化采样 source。 */
+    static void blitIsland(java.awt.image.BufferedImage canvas, Island isl,
+                           java.awt.image.BufferedImage source) {
+        int W = canvas.getWidth()
+        int bw = Math.max(1, isl.x1 - isl.x0 + 1)
+        int bh = Math.max(1, isl.y1 - isl.y0 + 1)
+        int sw = source.getWidth()
+        int sh = source.getHeight()
+        isl.pixels.each { idx ->
+            int x = idx % W
+            int y = (int) (idx / W)
+            double u = (x - isl.x0) / (double) bw
+            double v = (y - isl.y0) / (double) bh
+            int sx = (int) Math.max(0, Math.min(sw - 1, Math.round(u * (sw - 1))))
+            int sy = (int) Math.max(0, Math.min(sh - 1, Math.round(v * (sh - 1))))
+            canvas.setRGB(x, y, new java.awt.Color(source.getRGB(sx, sy), false).getRGB())
+        }
+    }
+
+    /** 底:把源图镜像平铺铺满整张画布(避免任何空白)。 */
+    static java.awt.image.BufferedImage tileBase(java.awt.image.BufferedImage src, int w, int h) {
+        def out = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        int sw = src.getWidth()
+        int sh = src.getHeight()
+        for (int y = 0; y < h; y++) {
+            int my = y % (sh * 2)
+            int sy = my < sh ? my : (sh * 2 - 1 - my)
+            for (int x = 0; x < w; x++) {
+                int mx = x % (sw * 2)
+                int sx = mx < sw ? mx : (sw * 2 - 1 - mx)
+                out.setRGB(x, y, new java.awt.Color(src.getRGB(sx, sy), false).getRGB())
+            }
+        }
+        return out
+    }
+
+    /** 程序画的钢色刀身:横向渐变 + 刃纹波动。 */
+    static java.awt.image.BufferedImage steelCanvas(int w, int h) {
+        def out = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (int x = 0; x < w; x++) {
+            double edge = Math.abs((x / (double) (w - 1)) - 0.5d) * 2.0d
+            int lum = (int) Math.round(236.0d - 70.0d * edge)
+            for (int y = 0; y < h; y++) {
+                double wave = Math.sin(y / 11.0d) * 7.0d + Math.sin(y / 3.7d) * 3.5d
+                int l2 = Math.max(0, Math.min(255, (int) Math.round(lum + wave - 6.0d)))
+                out.setRGB(x, y, new java.awt.Color(l2,
+                        Math.max(0, Math.min(255, (int) Math.round(l2 * 0.99d))),
+                        Math.max(0, Math.min(255, (int) Math.round(l2 * 1.01d)))).getRGB())
+            }
+        }
+        return out
+    }
+
+    /** 菱形饰件的素材:从源图取一块缩放过来(形状由 UV 决定,这里只提供颜色)。 */
+    static java.awt.image.BufferedImage diamondTile(java.awt.image.BufferedImage src, int size) {
+        def out = new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        def g = out.createGraphics()
+        g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+        g.drawImage(src, 0, 0, size, size, null)
+        g.dispose()
+        return out
+    }
+
+    /** 细条/小件的填充色:取源图里有颜色部分的中位近似(跳过近白)。 */
+    static java.awt.image.BufferedImage solidTile(java.awt.image.BufferedImage src, int size) {
+        int r = 0
+        int gg = 0
+        int b = 0
+        int n = 0
+        for (int y = 0; y < src.getHeight(); y += 13) {
+            for (int x = 0; x < src.getWidth(); x += 13) {
+                def c = new java.awt.Color(src.getRGB(x, y), false)
+                if (c.red + c.green + c.blue < 690) {
+                    r += c.red
+                    gg += c.green
+                    b += c.blue
+                    n++
+                }
+            }
+        }
+        if (n == 0) {
+            r = 240
+            gg = 236
+            b = 232
+            n = 1
+        }
+        def out = new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                out.setRGB(x, y, new java.awt.Color((int) (r / n), (int) (gg / n), (int) (b / n)).getRGB())
+            }
+        }
+        return out
+    }
+
+    /** 水印清洗:右下角一矩形内换成**左侧镜像**的内容。 */
+    static java.awt.image.BufferedImage cleanCorner(java.awt.image.BufferedImage src,
+                                                    double widthFrac, double heightFrac) {
+        int w = src.getWidth()
+        int h = src.getHeight()
+        int rw = Math.max(8, (int) Math.round(w * widthFrac))
+        int rh = Math.max(8, (int) Math.round(h * heightFrac))
+        int x0 = w - rw
+        int y0 = h - rh
+        def out = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int sx = x
+                if (x >= x0 && y >= y0) {
+                    sx = Math.max(0, x - rw)
+                }
+                out.setRGB(x, y, new java.awt.Color(src.getRGB(sx, y), false).getRGB())
+            }
+        }
+        return out
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 任务:foxLocal —— 【仅本地试验】用重锋原版 white.png 当布局模板,覆盖我们的配色/纹样
+// ----------------------------------------------------------------------------
+// 合规边界(必须保留在代码里):
+//   white.png 是重锋(SlashBlade: Resharped)的 ARR 素材。本任务产出的是它的**衍生品**,
+//   因此:①产物写在 fox_local.png 并**加入 .gitignore**,永不入库/发布;
+//   ②只在你自己的客户端/存档里做效果验证;③要发布必须换回自绘的 fox.png。
+// ----------------------------------------------------------------------------
+def foxLocalPng = new File(project.projectDir,
+        'src/main/resources/assets/applied_slash/models/lili/fox_local.png')
+
+tasks.register('foxLocal') {
+    group = 'applied slash tooling'
+    description = '【仅本地试验】以重锋 white.png 为布局模板重上我们的粉黛配色 + 覆盖樱枝/狐面徽记(产物不入库)'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读 jar/素材并写资源文件')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        int W = FoxLayout.OUT_W
+        int H = FoxLayout.OUT_H
+
+        // 1) 模板:重锋 white.png,按 2× 最近邻放大(布局逐像素不变)
+        def tpl = FoxLocalKit.readImage(foxJar, FOX_TEX_ENTRY)
+        def base = new java.awt.image.BufferedImage(W, H, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int sx = (int) (x / 2)
+                int sy = (int) (y / 2)
+                def c = new java.awt.Color(tpl.getRGB(Math.min(sx, tpl.getWidth() - 1),
+                        Math.min(sy, tpl.getHeight() - 1)), false)
+                // 原图若有透明像素(白狐那张没有,防御性处理)⇒ 补成我们的漆底
+                if (c.alpha < 128) {
+                    base.setRGB(x, y, new java.awt.Color(0xF7, 0xF1, 0xEE).getRGB())
+                } else {
+                    base.setRGB(x, y, c.getRGB())
+                }
+            }
+        }
+
+        // 2) 配色重映射:保留原图的明暗结构,把颜色换成我们的"粉黛"梯级
+        def ramp = FoxLocalOps.remapToPalette(base, [
+                [0.00d, new int[]{0x2A, 0x21, 0x30}],   // 最暗:深墨紫(柄卷/深色件)
+                [0.35d, new int[]{0x8E, 0x6F, 0x86}],   // 中暗:藕紫
+                [0.68d, new int[]{0xE4, 0xC9, 0xD2}],   // 中亮:淡玫瑰
+                [1.00d, new int[]{0xF7, 0xF1, 0xEE}]])  // 最亮:象牙白漆
+
+        // 3) 覆盖纹样:把你给的素材按 UV 岛贴到对应部件上(alpha 合成,遇透明补底色)
+        def srcSaya = javax.imageio.ImageIO.read(new File(foxSourceDir, 'saya_design.png'))
+        def srcTsuba = javax.imageio.ImageIO.read(new File(foxSourceDir, 'tsuba.png'))
+        def cleanedSaya = FoxTex.cleanCorner(srcSaya, 0.28d, 0.05d)
+        def cleanedTsuba = FoxTex.cleanCorner(srcTsuba, 0.19d, 0.10d)
+        def groups = (FoxObj.parse(FoxObj.readLines(foxJar, FOX_MODEL_ENTRY), W, H).groups
+                as Map<String, List<List<int[]>>>)
+
+        def log = []
+        // 鞘身:取 sheath 组最大的长条岛,把"樱枝"竖着铺进去(按长度平铺 2 段,避免拉伸成色带)
+        FoxLocalOps.biggestStrip(FoxUvMap.mask(groups['sheath'], W, H), W, H)?.with { isl ->
+            FoxLocalOps.overlayTile(base, isl, cleanedSaya, 2)
+            log << "sheath 长条 x[${isl.x0},${isl.x1}] y[${isl.y0},${isl.y1}] ← 樱枝(纵向平铺 2 段)"
+        }
+        // 刀镡:八边形岛(近方形、2,744 px)居中放狐面徽记
+        def bladeIslands = FoxTex.islands(FoxUvMap.mask(groups['blade'], W, H), W, H)
+        def octagon = bladeIslands.find { FoxTex.classify(it) == 'plate' }
+        if (octagon != null) {
+            FoxLocalOps.overlayCentred(base, octagon, cleanedTsuba)
+            log << "刀镡八边形 x[${octagon.x0},${octagon.x1}] y[${octagon.y0},${octagon.y1}] ← 狐面徽记(居中)"
+        }
+
+        // 4) 输出(不入库)
+        def previewDir = new File(project.projectDir, 'build/fox-preview')
+        previewDir.mkdirs()
+        foxLocalPng.parentFile.mkdirs()
+        javax.imageio.ImageIO.write(ramp, 'png', foxLocalPng)
+        javax.imageio.ImageIO.write(ramp, 'png', new File(previewDir, 'fox-local-384x768.png'))
+        println '===== foxLocal(仅本地试验,产物不入库)====='
+        println "  模板      : ${foxJar.name}!${FOX_TEX_ENTRY}(重锋 ARR 素材,仅作布局模板)"
+        println "  产物      : ${foxLocalPng}(${foxLocalPng.length()} B)"
+        println "  配色      : 原图明暗结构不变,颜色换成粉黛梯级(深墨紫 → 藕紫 → 淡玫瑰 → 象牙白)"
+        log.each { println "    ${it}" }
+        println "  预览      : ${new File(previewDir, 'fox-local-384x768.png')}"
+        println '===== 结束(切 lili.json 的 render.texture 到 fox_local.png 即可进游戏看)====='
+    }
+}
+
+/** 【foxLocal 专用】模板重上色的辅助函数。 */
+class FoxLocalKit {
+    /** 在重锋 jar 里读一张图(PNG)。 */
+    static java.awt.image.BufferedImage readImage(File jarFile, String entry) {
+        def zip = new java.util.zip.ZipFile(jarFile)
+        try {
+            def e = zip.getEntry(entry)
+            if (e == null) {
+                throw new IllegalStateException("${jarFile.name} 里没有 ${entry}")
+            }
+            def img = javax.imageio.ImageIO.read(zip.getInputStream(e))
+            if (img == null) {
+                throw new IllegalStateException("${entry} 不是可读图片")
+            }
+            return img
+        } finally {
+            zip.close()
+        }
+    }
+}
+
+/** 【foxLocal 专用】重上色 / 覆盖纹样的操作(独立类,避免改动既有 FoxTex)。 */
+class FoxLocalOps {
+    /** 保留原图明暗结构,把颜色换成给定梯级(线性插值 + 细节偏移)。 */
+    static java.awt.image.BufferedImage remapToPalette(java.awt.image.BufferedImage src, List ramp) {
+        int w = src.getWidth()
+        int h = src.getHeight()
+        def out = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                def c = new java.awt.Color(src.getRGB(x, y), false)
+                double lum = (0.299d * c.red + 0.587d * c.green + 0.114d * c.blue) / 255.0d
+                int lo = 0
+                while (lo < ramp.size() - 2 && lum > (ramp[lo + 1][0] as double)) {
+                    lo++
+                }
+                double a0 = ramp[lo][0] as double
+                double a1 = ramp[lo + 1][0] as double
+                double t = (lum - a0) / Math.max(1.0e-6d, a1 - a0)
+                int[] c0 = ramp[lo][1] as int[]
+                int[] c1 = ramp[lo + 1][1] as int[]
+                double baseLum = 255.0d * (a0 + (a1 - a0) * t)
+                double detail = (0.299d * c.red + 0.587d * c.green + 0.114d * c.blue) - baseLum
+                int r = (int) Math.round(c0[0] + (c1[0] - c0[0]) * t + detail * 0.25d)
+                int g = (int) Math.round(c0[1] + (c1[1] - c0[1]) * t + detail * 0.25d)
+                int b = (int) Math.round(c0[2] + (c1[2] - c0[2]) * t + detail * 0.25d)
+                out.setRGB(x, y, new java.awt.Color(
+                        Math.max(0, Math.min(255, r)),
+                        Math.max(0, Math.min(255, g)),
+                        Math.max(0, Math.min(255, b))).getRGB())
+            }
+        }
+        return out
+    }
+
+    /** 某一组掩码里最大的长条岛。 */
+    static Object biggestStrip(boolean[] mask, int w, int h) {
+        def strips = FoxTex.islands(mask, w, h).findAll { FoxTex.classify(it) == 'strip' }
+        if (strips.isEmpty()) {
+            return null
+        }
+        return strips.max { it.pixels.size() }
+    }
+
+    /** 把 source 沿长度**平铺** repeat 段铺进岛内(alpha<128 的源像素不动,保留底色)。 */
+    static void overlayTile(java.awt.image.BufferedImage canvas, Object island,
+                            java.awt.image.BufferedImage source, int repeat) {
+        def isl = island
+        int W = canvas.getWidth()
+        int bw = Math.max(1, (isl.x1 as int) - (isl.x0 as int) + 1)
+        int bh = Math.max(1, (isl.y1 as int) - (isl.y0 as int) + 1)
+        int sw = source.getWidth()
+        int sh = source.getHeight()
+        (isl.pixels as List<Integer>).each { idx ->
+            int x = idx % W
+            int y = (int) (idx / W)
+            double u = (x - (isl.x0 as int)) / (double) bw
+            double v = (((y - (isl.y0 as int)) / (double) bh) * repeat) % 1.0d
+            int sx = (int) Math.max(0, Math.min(sw - 1, Math.round(u * (sw - 1))))
+            int sy = (int) Math.max(0, Math.min(sh - 1, Math.round(v * (sh - 1))))
+            def c = new java.awt.Color(source.getRGB(sx, sy), true)
+            if (c.alpha >= 128) {
+                canvas.setRGB(x, y, new java.awt.Color(c.red, c.green, c.blue).getRGB())
+            }
+        }
+    }
+
+    /** 取 source 中心区域,按 contain 居中铺进岛内(alpha<128 不动)。 */
+    static void overlayCentred(java.awt.image.BufferedImage canvas, Object island,
+                               java.awt.image.BufferedImage source) {
+        def isl = island
+        int W = canvas.getWidth()
+        int bw = Math.max(1, (isl.x1 as int) - (isl.x0 as int) + 1)
+        int bh = Math.max(1, (isl.y1 as int) - (isl.y0 as int) + 1)
+        int sw = source.getWidth()
+        int sh = source.getHeight()
+        // 源图中心 80% 方形(避开边缘留白)
+        int cx0 = (int) (sw * 0.10d)
+        int cx1 = (int) (sw * 0.90d)
+        int cy0 = (int) (sh * 0.10d)
+        int cy1 = (int) (sh * 0.90d)
+        (isl.pixels as List<Integer>).each { idx ->
+            int x = idx % W
+            int y = (int) (idx / W)
+            double u = (x - (isl.x0 as int)) / (double) bw
+            double v = (y - (isl.y0 as int)) / (double) bh
+            int sx = (int) Math.round(cx0 + u * (cx1 - cx0))
+            int sy = (int) Math.round(cy0 + v * (cy1 - cy0))
+            def c = new java.awt.Color(source.getRGB(
+                    Math.max(0, Math.min(sw - 1, sx)), Math.max(0, Math.min(sh - 1, sy))), true)
+            if (c.alpha >= 128) {
+                canvas.setRGB(x, y, new java.awt.Color(c.red, c.green, c.blue).getRGB())
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 任务:foxUvGuide —— 给 PS 画图用的"轮廓参考图 + 坐标表"(按 FoxLayout.SCALE)
+// ----------------------------------------------------------------------------
+tasks.register('foxUvGuide') {
+    group = 'applied slash tooling'
+    description = '出 PS 用的 UV 轮廓参考图(画布 + 每岛轮廓 + 组名标注)与 5x 坐标表'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读 jar 并写预览图')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        int W = FoxLayout.OUT_W
+        int H = FoxLayout.OUT_H
+        def groups = (FoxObj.parse(FoxObj.readLines(foxJar, FOX_MODEL_ENTRY), W, H).groups
+                as Map<String, List<List<int[]>>>)
+        def outDir = new File(project.projectDir, 'build/fox-uv')
+        outDir.mkdirs()
+        def img = new java.awt.image.BufferedImage(W, H, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        def g = img.createGraphics()
+        g.setColor(java.awt.Color.WHITE)
+        g.fillRect(0, 0, W, H)
+        g.setStroke(new java.awt.BasicStroke(Math.max(1.0f, W / 384.0f)))
+        def sb = new StringBuilder()
+        sb.append("# PS 参考:岛坐标表(画布 ${W}×${H};倍数 ${FoxLayout.SCALE}×)\n")
+        sb.append("# 组名             岛屿  像素数  左上(x,y)        右下(x,y)\n")
+        def palette = FoxUvMap.PALETTE
+        groups.keySet().sort().eachWithIndex { grp, gi ->
+            int colour = palette[gi % palette.length]
+            boolean[] mask = FoxUvMap.mask(groups[grp], W, H)
+            g.setColor(new java.awt.Color(colour, false))
+            FoxTex.islands(mask, W, H).eachWithIndex { isl, ii ->
+                g.drawRect(isl.x0, isl.y0, isl.x1 - isl.x0, isl.y1 - isl.y0)
+                if (ii == 0) {
+                    g.setFont(new java.awt.Font('SansSerif', java.awt.Font.BOLD, Math.max(12, (int) (W / 32.0d))))
+                    g.drawString(grp, isl.x0 + 4, Math.max(20, isl.y0 + 20))
+                }
+                sb.append(String.format(Locale.ROOT, "  %-16s %3d  %7d  (%5d,%5d)  (%5d,%5d)%n",
+                        grp, ii + 1, isl.pixels.size(), isl.x0, isl.y0, isl.x1, isl.y1))
+            }
+        }
+        g.dispose()
+        def guide = new File(outDir, "uv-guide-${W}x${H}.png")
+        javax.imageio.ImageIO.write(img, 'png', guide)
+        def coords = new File(outDir, "uv-coords-${W}x${H}.txt")
+        coords.setText(sb.toString(), 'UTF-8')
+        println '===== foxUvGuide ====='
+        println "  参考图    : ${guide}(白底 + 每岛轮廓 + 组名,直接拖进 PS 当上层参考)"
+        println "  坐标表    : ${coords}"
+        println "  画布      : ${W}×${H}(倍数 ${FoxLayout.SCALE}×;显存约 ${String.format(Locale.ROOT, '%.1f', W * H * 4 / 1048576.0d)} MB)"
+        println '===== 结束 ====='
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 任务:foxCheck -PfoxTex=<png> —— 回读自检:透明/近黑像素是否落在各组的采样范围内
+// ----------------------------------------------------------------------------
+// 这是"贴图能不能用"的硬判据:只要某个组的 UV 落在透明像素上,游戏里那部分就会变黑/变透明;
+// 而 effect 组覆盖整张贴图的约 75%,所以"整张必须不透明"基本等价于"可用"。
+// ----------------------------------------------------------------------------
+def foxCheckJar = fileTree(dir: 'libs', include: ['slashblade-*.jar']).files.sort { it.name }.reverse().first()
+def foxCheckTex = project.hasProperty('foxTex')
+        ? new File(project.projectDir, project.property('foxTex').toString())
+        : null
+
+tasks.register('foxCheck') {
+    group = 'applied slash tooling'
+    description = '回读自检:检查给定贴图在每组 UV 范围内是否有透明/近黑像素(-PfoxTex=路径)'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读图并计算')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        if (foxCheckTex == null || !foxCheckTex.isFile()) {
+            throw new GradleException('用法: gradlew foxCheck -PfoxTex=<贴图路径>')
+        }
+        def img = javax.imageio.ImageIO.read(foxCheckTex)
+        if (img == null) {
+            throw new GradleException("不是可读图片: ${foxCheckTex}")
+        }
+        int W = img.getWidth()
+        int H = img.getHeight()
+        double scale = W / (double) FoxLayout.SRC_W
+        def groups = (FoxObj.parse(FoxObj.readLines(foxCheckJar, FOX_MODEL_ENTRY), W, H).groups
+                as Map<String, List<List<int[]>>>)
+        println '===== foxCheck ====='
+        println String.format(Locale.ROOT, '  贴图      : %s  %d×%d(≈ %.2f× @192×384)', foxCheckTex.name, W, H, scale)
+        // 整图统计
+        int tot = 0
+        int trans = 0
+        int black = 0
+        for (int y = 0; y < H; y += 2) {
+            for (int x = 0; x < W; x += 2) {
+                def c = new java.awt.Color(img.getRGB(x, y), true)
+                tot++
+                if (c.alpha < 128) { trans++ }
+                else if (c.red < 24 && c.green < 24 && c.blue < 24) { black++ }
+            }
+        }
+        println String.format(Locale.ROOT, '  整图      : 透明 %.2f%%   近黑 %.2f%%', 100.0d * trans / tot, 100.0d * black / tot)
+        println '  逐组检查(该组 UV 范围内的像素):'
+        def bad = []
+        groups.keySet().sort().each { g ->
+            boolean[] mask = FoxUvMap.mask(groups[g], W, H)
+            int n = 0
+            int t = 0          // alpha < 128
+            int art = 0        // alpha < 128 但 RGB 非黑(重锋不吃 alpha,这类是"有效内容")
+            int b = 0          // RGB 近黑(真正会变黑的像素,与 alpha 无关)
+            for (int i = 0; i < mask.length; i++) {
+                if (!mask[i]) { continue }
+                n++
+                def c = new java.awt.Color(img.getRGB(i % W, (int) (i / W)), true)
+                int rgbSum = c.red + c.green + c.blue
+                boolean blackRgb = c.red < 24 && c.green < 24 && c.blue < 24
+                if (c.alpha < 128) {
+                    t++
+                    if (!blackRgb) { art++ }
+                }
+                if (blackRgb) { b++ }
+            }
+            double tp = n == 0 ? 0.0d : 100.0d * t / n
+            double ap = n == 0 ? 0.0d : 100.0d * art / n
+            double bp = n == 0 ? 0.0d : 100.0d * b / n
+            String verdict = bp > 5.0d ? '不通过(大面积纯黑)' : 'OK'
+            println String.format(Locale.ROOT, '    %-16s 采样 %7d  alpha<128 %6.2f%%(其中非黑 %6.2f%%)  RGB纯黑 %6.2f%%   %s',
+                    g, n, tp, ap, bp, verdict)
+            if (bp > 5.0d) { bad << g }
+        }
+        println bad.isEmpty()
+                ? '  结论      : 可用(没有任何组出现大面积纯黑采样)'
+                : "  结论      : 不可用 —— 这些组会大面积变黑: ${bad.join(', ')}"
+        println '===== 结束 ====='
+    }
+}

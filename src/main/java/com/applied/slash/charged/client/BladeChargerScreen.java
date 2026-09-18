@@ -1,6 +1,6 @@
 package com.applied.slash.charged.client;
 
-import com.applied.slash.charged.ChargedBladeEnergy;
+import com.applied.slash.charged.BladeEnergy;
 import com.applied.slash.charged.block.BladeChargerBlockEntity;
 import com.applied.slash.charged.block.BladeChargerMenu;
 import com.applied.slash.charged.block.BladeChargerRegistry;
@@ -70,7 +70,8 @@ public class BladeChargerScreen extends AbstractContainerScreen<BladeChargerMenu
     private static final int SLOT_SIZE = 16;
 
     /** 语言键(与 lang 文件一致,PLAN §9.3)。 */
-    private static final String KEY_ENERGY = "item.applied_slash.charged_blade.tooltip.energy";
+    // 能量读数用的是充能器自己的键(5 把充能刀删除后,刀身上那套 tooltip 键也随之删除)
+    private static final String KEY_ENERGY = "applied_slash.blade_charger.value.energy";
     private static final String KEY_STATUS_IDLE = "applied_slash.blade_charger.status.idle";
     private static final String KEY_STATUS_CHARGING = "applied_slash.blade_charger.status.charging";
     private static final String KEY_STATUS_FULL = "applied_slash.blade_charger.status.full";
@@ -120,8 +121,8 @@ public class BladeChargerScreen extends AbstractContainerScreen<BladeChargerMenu
                 left + SLOT_BLADE_X + SLOT_SIZE + 1, top + SLOT_BLADE_Y + SLOT_SIZE + 1, SLOT_BORDER);
 
         ItemStack blade = this.menu.getSlot(BladeChargerMenu.SLOT_BLADE).getItem();
-        int energy = ChargedBladeEnergy.get(blade);
-        int max = ChargedBladeEnergy.max(blade);
+        int energy = BladeEnergy.get(blade);
+        int max = BladeEnergy.max(blade);
 
         // 能量条:先边框、再空槽、最后按比例从底部往上填
         int barLeft = left + BAR_X;

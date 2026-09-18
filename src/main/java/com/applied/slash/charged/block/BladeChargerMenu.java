@@ -1,6 +1,6 @@
 package com.applied.slash.charged.block;
 
-import com.applied.slash.charged.ChargedBladeItem;
+import com.applied.slash.SlashBladeBlades;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.Container;
@@ -114,7 +114,7 @@ public class BladeChargerMenu extends AbstractContainerMenu {
     /**
      * shift 点击搬运:刀槽 ↔ 玩家背包。
      *
-     * <p>刀不可堆叠,所以每一趟最多搬 1 件;从玩家背包往刀槽搬时,只有充能刀才放得进去
+     * <p>刀不可堆叠,所以每一趟最多搬 1 件;从玩家背包往刀槽搬时,只有拔刀剑才放得进去
      * (由 {@link BladeSlot#mayPlace} 拦;这里用 {@code moveItemStackTo} 的返回值判断有没有搬成,
      * 搬不成时原样返回 EMPTY —— 与原版菜单一致的行为)。
      */
@@ -155,7 +155,7 @@ public class BladeChargerMenu extends AbstractContainerMenu {
                 : null;
     }
 
-    /** 刀槽:只收本模组充能刀,且只有 1 件。 */
+    /** 刀槽:只收**拔刀剑**(任意一把,含数据包刀「莉莉」),且只有 1 件。 */
     private static final class BladeSlot extends Slot {
         BladeSlot(Container container, int slot, int x, int y) {
             super(container, slot, x, y);
@@ -163,7 +163,7 @@ public class BladeChargerMenu extends AbstractContainerMenu {
 
         @Override
         public boolean mayPlace(ItemStack stack) {
-            return !stack.isEmpty() && stack.getItem() instanceof ChargedBladeItem;
+            return SlashBladeBlades.isSlashBlade(stack);
         }
 
         @Override

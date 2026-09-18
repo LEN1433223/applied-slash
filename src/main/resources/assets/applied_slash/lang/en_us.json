@@ -1,4 +1,14 @@
 {
+  "item.applied_slash.seina": "Seina",
+  "item.applied_slash.shiori": "Shiori",
+  "item.applied_slash.kaede": "Kaede",
+  "item.applied_slash.portable_slash_cell": "Slash Cell",
+  "item.applied_slash.portable_slash_cell.tooltip.usage": "Holds %s / %s blades",
+  "item.applied_slash.portable_slash_cell.tooltip.hint": "Right-click to open (requires charge). Each stored blade gives Lili 10% of its base damage, sharing the 8-blade cap with your hotbar (cell contents count first).",
+  "item.applied_slash.portable_slash_cell.tooltip.exclusive": "Accepts SlashBlades only; identical NBT does not stack.",
+  "se.applied_slash.inventory_transfer": "Love and Bonds",
+  "se.applied_slash.inventory_transfer.desc": "Bonds grant you strength",
+
   "itemGroup.applied_slash": "Applied Slash",
 
   "item.applied_slash.slash_blade_cell": "SlashBlade Storage Cell",
@@ -34,20 +44,28 @@
   "command.applied_slash.inspect.extract_reinsert": "Put back as-is = %s (should equal the previous number; net change is 0)",
   "command.applied_slash.inspect.error": "Inspector error: %s",
 
-  "item.applied_slash.charged_blade_pulse": "Charged Blade: Pulse",
-  "item.applied_slash.charged_blade_resonance": "Charged Blade: Resonance",
-  "item.applied_slash.charged_blade_surge": "Charged Blade: Surge",
-  "item.applied_slash.charged_blade_overcharge": "Charged Blade: Overcharge",
-  "item.applied_slash.charged_blade_singularity": "Charged Blade: Singularity",
-  "item.applied_slash.charged_blade.tooltip.energy": "Energy %s / %s",
-  "item.applied_slash.charged_blade.tooltip.empty": "Out of energy: unusable",
-  "item.applied_slash.charged_blade.tooltip.quantize": "Stored in 1/10 steps (rounded down on withdrawal, loses up to %s)",
+  "item.applied_slash.lili": "Lili",
 
   "block.applied_slash.blade_charger": "Blade Charger",
   "container.applied_slash.blade_charger": "Blade Charger",
   "applied_slash.blade_charger.status.idle": "No blade",
   "applied_slash.blade_charger.status.charging": "Charging (%s AE per point)",
   "applied_slash.blade_charger.status.full": "Fully charged",
-  "applied_slash.blade_charger.status.no_ae": "Not enough AE",
-  "applied_slash.charged_blade.no_energy_hint": "Out of energy: cannot attack"
+  "applied_slash.blade_charger.status.no_ae": "No grid power and no poppies",
+  "applied_slash.blade_charger.status.generating": "Burning poppies (%s AE per flower, %s ticks)",
+  "applied_slash.blade_charger.label.energy": "Energy",
+  "applied_slash.blade_charger.label.fuel": "Poppies",
+  "applied_slash.blade_charger.label.buffer": "Buffer",
+  "applied_slash.blade_charger.value.energy": "%s / %s",
+  "applied_slash.blade_charger.value.fuel": "%s pcs · %s%%",
+  "applied_slash.blade_charger.value.fuel.empty": "empty",
+  "applied_slash.blade_charger.value.buffer": "%s",
+  "applied_slash.blade_charger.tip.buffer": "Internal energy buffer",
+  "applied_slash.blade_charger.tip.fuel.title": "Poppy",
+  "applied_slash.blade_charger.tip.fuel.use": "Works as a special catalyst: burning it generates KAE",
+  "applied_slash.blade_charger.tip.fuel.rate": "%s AE per flower · %s ticks each · burning %s%%",
+  "applied_slash.blade_charger.tip.help.title": "How to use",
+  "applied_slash.blade_charger.tip.help.blade": "1. Put a SlashBlade in the left slot (any SlashBlade, Lili included)",
+  "applied_slash.blade_charger.tip.help.fuel": "2. Put poppies on the right: they are burned to generate KAE",
+  "applied_slash.blade_charger.tip.help.energy": "3. The energy row reads the blade; hover the buffer bar for details"
 }

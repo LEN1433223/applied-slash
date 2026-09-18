@@ -1,7 +1,0 @@
-{
-  "credit": "像素图源码见 tools/textures.gradle 的 bladeArt(同一刀身骨架 + 逐把不同的能量色标);16x16 由 verifyResources 断言",
-  "parent": "minecraft:item/handheld",
-  "textures": {
-    "layer0": "applied_slash:item/charged_blade_surge"
-  }
-}

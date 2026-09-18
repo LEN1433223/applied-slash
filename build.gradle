@@ -28,6 +28,22 @@ sourceSets.main.resources {
 
 repositories {
     // Add here additional repositories if required by some of the dependencies below.
+    //
+    // Modrinth Maven —— 同时托管 AE2 与 SlashBlade: Resharped，是下面 dependencies 里
+    // 「本地没有 libs/*.jar 时的回退坐标」的来源（libs/ 里的第三方 jar 按版权不进仓库，
+    // 所以克隆者与本仓库的 GitHub CI 都必须能从这里取到前置）。
+    //
+    // 已实证（`gradlew -I tools/ci-dep-probe.init.gradle probeCiDeps`，解析结果与本地 libs/ 同尺寸）：
+    //   maven.modrinth:ae2:19.2.17                        -> ae2-19.2.17.jar (8,230,896 B)
+    //   maven.modrinth:slashblade-resharped:2.0.7-1.21.1  -> slashblade-resharped-2.0.7-1.21.1.jar (3,886,797 B)
+    //   maven.modrinth:guideme:21.1.14                    -> guideme-21.1.14.jar (9,308,969 B)
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+        content {
+            includeGroup 'maven.modrinth'
+        }
+    }
 }
 
 base {
@@ -48,6 +64,10 @@ neoForge {
 
     // This line is optional. Access Transformers are automatically detected
     // accessTransformers = project.files('src/main/resources/META-INF/accesstransformer.cfg')
+    //
+    // Deliberately NOT enabled: Slot#x/y are public final in 1.21.1, and the charger only needs
+    // two fixed slots. Keeping a global AT for that is not worth it -- the slot positions live in
+    // BladeChargerMenu constants and the screen verifies them against the style doc instead.
 
     // Default run configurations.
     // These can be tweaked, removed, or duplicated as needed.
@@ -105,9 +125,20 @@ neoForge {
                 systemProperty 'appliedslash.modelDump', 'true'
             }
             // 图标渲染台(见 dev/UiScreenshot):用真实 GUI 物品渲染路径把几个物品画到标题界面上,
-            // 自动截屏到 run/screenshots 并退出客户端。cmd /c "gradlew.bat runClient -PuiShot"
+            // 截屏到 run/screenshots。cmd /c "gradlew.bat runClient -PuiShot"
+            //
+            // 注意:-PuiShot 会把 -Dappliedslash.uiShot=true 写进 build/moddev/clientRunVmArgs.txt,
+            // 而 **IDE 的 Client 运行配置就是读那个文件启动的** —— 也就是说这个开关会残留到 IDE 启动里。
+            // 所以截图台现在自己只截一帧就禁用、且绝不关客户端;要它截完自动退出得再加 -PuiShotQuit。
             if (project.hasProperty('uiShot')) {
                 systemProperty 'appliedslash.uiShot', 'true'
+                if (project.hasProperty('uiShotQuit')) {
+                    systemProperty 'appliedslash.uiShotQuit', 'true'
+                }
+            }
+            // 充能刀 GUI 图标的缩放(开发期调参,免重编译):-PbladeIconScale=0.42
+            if (project.hasProperty('bladeIconScale')) {
+                systemProperty 'appliedslash.bladeIconScale', project.property('bladeIconScale').toString()
             }
 
             // Recommended logging data for a userdev environment
@@ -149,11 +180,15 @@ dependencies {
     // localRuntime：仅在 dev 环境（runClient / runServer）提供这些前置，不会传递给下游。
 
     // AE2 —— modid "ae2"，19.2.17（MC 1.21.1 / NeoForge >= 21.1.169），API 包 appeng.api
-    // 本地有 jar 就用本地（开发机版本严格可控）；没有就回落到 AE2 官方 Maven，
+    // 本地有 jar 就用本地（开发机版本严格可控）；没有就回落到 Modrinth Maven，
     // 这样**克隆者与 GitHub CI 也能构建**（libs/ 里的第三方 jar 按版权不进仓库）。
-    compileOnly file('libs/ae2-19.2.17.jar').exists()
+    // 2026-02 修正：原先回退到 `appeng:appliedenergistics2:19.2.17`，但本仓库并未声明 AE2 官方
+    // Maven，CI 上直接 "Could not find appeng:appliedenergistics2:19.2.17" 失败；改用已实证可解析的
+    // Modrinth 坐标（与 libs/ 中的 jar 同尺寸）。
+    // -PforceMavenDeps：强制走 Maven 路径，用于在本地复现 CI 的解析条件。
+    compileOnly((!project.hasProperty('forceMavenDeps') && file('libs/ae2-19.2.17.jar').exists())
             ? files('libs/ae2-19.2.17.jar')
-            : 'appeng:appliedenergistics2:19.2.17'
+            : 'maven.modrinth:ae2:19.2.17')
     if (!project.hasProperty('noAe2')) {
         localRuntime files('libs/ae2-19.2.17.jar')
         // GuideME —— AE2 的强制前置（modid "guideme"）。
@@ -167,9 +202,9 @@ dependencies {
     // SlashBlade: Resharpened —— modid "slashblade"，2.0.7-1.21.1（NeoForge >= 21.1.228）
     // 同样"本地 jar 优先、否则走 Modrinth Maven"。slug 用 Modrinth API 实证过:
     // 是 slashblade-resharped(注意拼写是 Resharped,不是 Resharpened)。
-    compileOnly file('libs/slashblade-2.0.7-1.21.1.jar').exists()
+    compileOnly((!project.hasProperty('forceMavenDeps') && file('libs/slashblade-2.0.7-1.21.1.jar').exists())
             ? files('libs/slashblade-2.0.7-1.21.1.jar')
-            : 'maven.modrinth:slashblade-resharped:2.0.7-1.21.1'
+            : 'maven.modrinth:slashblade-resharped:2.0.7-1.21.1')
     if (!project.hasProperty('noSlashblade')) {
         localRuntime files('libs/slashblade-2.0.7-1.21.1.jar')
     }
@@ -181,6 +216,19 @@ dependencies {
     if (project.hasProperty('compatMods')) {
         localRuntime files('libs/sjap-2.0.0-1.21.1.jar', 'libs/shizuku-blade-3.7.0-1.21.1.jar')
     }
+
+    // 第三方兼容性测试用的模组:放 **run/mods/** 里,不要写在这里。
+    //
+    // 为什么:libs/*.jar 不会自动进运行时 —— 只有被 localRuntime 声明的 jar 才会被 FML 发现;
+    // 而 run/mods/ 是 FML 每次启动都会扫描的游戏目录 mods(FMLPaths 的 MODSDIR),
+    // **无论从 Gradle 还是 IDE 启动客户端/服务端都生效**,不需要任何 Gradle 参数。
+    // 曾经在这里写过 -PcompatTest 门控,但用户直接从 IDE 启动客户端 ⇒ 属性没传 ⇒ 模组没加载
+    // (2026-09-17 实测:Mod List 仍只有 6 条)。
+    //
+    // 注意:**不要再把同一批 jar 也写进 localRuntime** —— 那会让同一个 modId 同时来自
+    // 类路径与 mods 目录,FML 会以"重复模组"拒绝启动。
+    //
+    // 当前 run/mods/ 里放的是:JEI 19.56(需要 mezz_config)、dummmmmmy(需要 moonlight)、moonlight。
 
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
@@ -233,8 +281,16 @@ neoForge.ideSyncTask generateModMetadata
 apply from: 'tools/textures.gradle'
 // 外部大图 → 16x16 贴图 的导入器(源图存档在 art/):gradlew importArt
 apply from: 'tools/art-import.gradle'
-// 资源链自检(模型/父链/贴图/PNG 格式):gradlew verifyResources
+// 资源链自检(模型/父链/贴图/PNG 格式/莉莉刀身定义):gradlew verifyResources
 apply from: 'tools/resources.gradle'
+// 莉莉刀鞘贴图重绘(只改鞘的像素,掩码外逐字节不变):gradlew generateLiliTexture
+apply from: 'tools/lili-texture.gradle'
+// 莉莉模型裁剪(删掉鞘上的金属环/栗形/下绪):gradlew generateLiliMesh
+apply from: 'tools/lili-mesh.gradle'
+// 白狐模型引用 + 自有贴图合成:gradlew foxUvMap / foxTexture
+apply from: 'tools/fox-texture.gradle'
+apply from: 'tools/item-icons.gradle'
+apply from: 'tools/blade-tint.gradle'
 
 // GameTest 用到的结构模板不是数据包资源,而是运行目录下的 gameteststructures/*.snbt
 // (见 StructureTemplateManager.loadFromTestStructures → loadFromSnbt(id, Paths.get("gameteststructures")))。

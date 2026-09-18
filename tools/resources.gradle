@@ -7,11 +7,419 @@
 //   2) 代码里用字符串拼出来的模型路径(如 block/slash_blade_cell)确实有对应文件
 //   3) 每个模型 JSON 可解析;parent 链能追到原版/本模组
 //   4) 每个 textures 引用都能找到对应 PNG(本模组 / 原版 assets / AE2)
-//   5) 本模组的 PNG 头部合法且为 16x16、8bit、非交错(与 AE2 自家贴图同格式)
+//   5) 拔刀剑「莉莉」:数据包定义(lili.json)的字段名与取值、被引用的模型/贴图文件真的存在、
+//      模型 8 个分组齐全、贴图是合法 PNG;并确认 5 把已删除的自设充能刀没有留下任何资产
+//   6) 本模组的 PNG 头部合法且为 16x16、8bit、非交错(与 AE2 自家贴图同格式)
 // ============================================================================
+
+/**
+ * 鞘壳的"圆柱度":返回 [绕圈段数, 相邻纵向面法线最大夹角(度)]。
+ *
+ * <p>做法(与被校验的生成器各自独立):把侧面(法线基本垂直于 X 的面)按面心 X 分站,
+ * 取面数最多的那一站,按面心绕轴角 atan2(z, y-中心y) 排序,再算相邻两面法线的夹角。
+ * 三棱柱壳会是 120°,16 段圆柱是 22.5° —— 这条断言就是"没有棱边"的可量化形式。
+ */
+static List<Object> facetStats(File objFile, Map<String, List<List<Integer>>> facesByGroup) {
+    def verts = []
+    objFile.readLines('UTF-8').each { line ->
+        if (line.startsWith('v ')) {
+            def p = line.split(' ')
+            verts << ([p[1] as double, p[2] as double, p[3] as double])
+        }
+    }
+    def byStation = [:]
+    (facesByGroup['sheath'] ?: []).each { f ->
+        if (f.size() < 3) {
+            return
+        }
+        double[] a = verts[f[0]]
+        double[] b = verts[f[1]]
+        double[] c = verts[f[2]]
+        double ux = b[0] - a[0]
+        double uy = b[1] - a[1]
+        double uz = b[2] - a[2]
+        double vx = c[0] - a[0]
+        double vy = c[1] - a[1]
+        double vz = c[2] - a[2]
+        double nx = uy * vz - uz * vy
+        double ny = uz * vx - ux * vz
+        double nz = ux * vy - uy * vx
+        double len = Math.sqrt(nx * nx + ny * ny + nz * nz)
+        if (len < 1.0e-9d) {
+            return
+        }
+        nx /= len
+        ny /= len
+        nz /= len
+        if (Math.abs(nx) > 0.8d) {
+            return                                  // 鞘尻封口那一圈:法线朝 X,不算侧面
+        }
+        double cx = (a[0] + b[0] + c[0] + verts[f[3 % f.size()]][0]) / 4.0d
+        double cy = (a[1] + b[1] + c[1] + verts[f[3 % f.size()]][1]) / 4.0d
+        double cz = (a[2] + b[2] + c[2] + verts[f[3 % f.size()]][2]) / 4.0d
+        def key = Math.round(cx * 100.0d)
+        if (!byStation.containsKey(key)) {
+            byStation[key] = []
+        }
+        byStation[key] << ([cx, cy, cz, nx, ny, nz] as double[])
+    }
+    if (byStation.isEmpty()) {
+        return [0, 0.0d]
+    }
+    def best = null
+    byStation.each { k, list -> if (best == null || list.size() > best.size()) { best = list } }
+    double cyAvg = 0.0d
+    best.each { cyAvg += it[1] }
+    cyAvg /= best.size()
+    def sorted = best.sort { p1, p2 -> Math.atan2(p1[2], p1[1] - cyAvg) <=> Math.atan2(p2[2], p2[1] - cyAvg) }
+    double maxAngle = 0.0d
+    for (int i = 0; i < sorted.size(); i++) {
+        def p1 = sorted[i]
+        def p2 = sorted[(i + 1) % sorted.size()]
+        double dot = p1[3] * p2[3] + p1[4] * p2[4] + p1[5] * p2[5]
+        double ang = Math.toDegrees(Math.acos(Math.max(-1.0d, Math.min(1.0d, dot))))
+        maxAngle = Math.max(maxAngle, ang)
+    }
+    return [(int) sorted.size(), maxAngle]
+}
+
+/**
+ * 统计"每个组有多少个面会把自己的平均 UV 采样到透明像素"。
+ *
+ * <p>用来做**回归对比**:有些组在原版素材里本来就采样透明像素(例如发光层 `effect`),
+ * 那不是我们改坏的;只有"比原版更多"才算回归。
+ *
+ * @param uOff/uScale/vOff/vScale 把这些 UV 映射回目标布局(原版对比时传 1/0 即恒等)
+ */
+static Map<String, Integer> countTransparentFaces(File objFile, Object png, double uScale, double uOff,
+                                                  double vScale, double vOff) {
+    def out = [:]
+    if (!objFile.isFile() || png == null) {
+        return out
+    }
+    int w = png.getWidth()
+    int h = png.getHeight()
+    def uvFaces = parseUvFaces(objFile, w, h)
+    uvFaces.each { g, list ->
+        int bad = 0
+        list.each { face ->
+            double u = (face[1] as double) * uScale + uOff
+            double row = (face[2] as double) * vScale + vOff
+            int px = (int) Math.max(0, Math.min(w - 1, Math.round(u * (w - 1))))
+            int py = (int) Math.max(0, Math.min(h - 1, Math.round(row * (h - 1))))
+            if (new java.awt.Color(png.getRGB(px, py), true).alpha < 128) {
+                bad++
+            }
+        }
+        if (bad > 0) {
+            out[g] = bad
+        }
+    }
+    return out
+}
+
+/** 一组面的 UV 像素包围盒 [x0, y0, x1, y1]。 */static int[] uvRect(List<List<List<Object>>> faces) {
+    double lo = Double.MAX_VALUE
+    double hi = -Double.MAX_VALUE
+    double rlo = Double.MAX_VALUE
+    double rhi = -Double.MAX_VALUE
+    faces.each { face ->
+        face[0].each { uv ->
+            lo = Math.min(lo, uv[0] as double)
+            hi = Math.max(hi, uv[0] as double)
+            rlo = Math.min(rlo, uv[1] as double)
+            rhi = Math.max(rhi, uv[1] as double)
+        }
+    }
+    return [(int) Math.round(lo), (int) Math.round(rlo), (int) Math.round(hi), (int) Math.round(rhi)] as int[]
+}
+
+/** 两个 ARGB 值在 RGB 三通道上的最大差(忽略 alpha:游戏采样只看颜色)。 */
+static int maxChannelDiff(int a, int b) {
+    int dr = Math.abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF))
+    int dg = Math.abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF))
+    int db = Math.abs((a & 0xFF) - (b & 0xFF))
+    return Math.max(dr, Math.max(dg, db))
+}
+
+/** 掩码按半径 r 膨胀(边长 r*2+1 的方形结构元)。 */
+static boolean[] dilateMask(boolean[] mask, int w, int h, int r) {
+    def out = new boolean[w * h]
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (!mask[y * w + x]) {
+                continue
+            }
+            for (int dy = -r; dy <= r; dy++) {
+                for (int dx = -r; dx <= r; dx++) {
+                    int nx = x + dx
+                    int ny = y + dy
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                        out[ny * w + nx] = true
+                    }
+                }
+            }
+        }
+    }
+    return out
+}
+
+/** 掩码按半径 r 腐蚀。 */
+static boolean[] erodeMask(boolean[] mask, int w, int h, int r) {
+    def out = new boolean[w * h]
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (!mask[y * w + x]) {
+                continue
+            }
+            boolean keep = true
+            for (int dy = -r; dy <= r && keep; dy++) {
+                for (int dx = -r; dx <= r; dx++) {
+                    int nx = x + dx
+                    int ny = y + dy
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h || !mask[ny * w + nx]) {
+                        keep = false
+                        break
+                    }
+                }
+            }
+            out[y * w + x] = keep
+        }
+    }
+    return out
+}
+
+/** 掩码内像素的平均 RGB。 */
+static double[] maskAverageRgb(Object img, boolean[] mask, int w, int h) {
+    double r = 0.0d
+    double g = 0.0d
+    double b = 0.0d
+    int n = 0
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (!mask[y * w + x]) {
+                continue
+            }
+            def c = new java.awt.Color(img.getRGB(x, y), true)
+            r += c.red
+            g += c.green
+            b += c.blue
+            n++
+        }
+    }
+    return n == 0 ? ([0.0d, 0.0d, 0.0d] as double[]) : ([(r / n), (g / n), (b / n)] as double[])
+}
+
+/** 按"面的平均 UV"取色的平均 RGB(与重锋渲染器的取色规则一致)。 */
+static double[] faceAverageRgb(Object img, List<List<List<Object>>> faces) {
+    double r = 0.0d
+    double g = 0.0d
+    double b = 0.0d
+    int n = 0
+    int w = img.getWidth()
+    int h = img.getHeight()
+    faces.each { face ->
+        int px = (int) Math.max(0, Math.min(w - 1, Math.round((face[1] as double) * (w - 1))))
+        int py = (int) Math.max(0, Math.min(h - 1, Math.round((face[2] as double) * (h - 1))))
+        def c = new java.awt.Color(img.getRGB(px, py), true)
+        r += c.red
+        g += c.green
+        b += c.blue
+        n++
+    }
+    return n == 0 ? ([0.0d, 0.0d, 0.0d] as double[]) : ([(r / n), (g / n), (b / n)] as double[])
+}
 
 def resourceAssets = file('src/main/resources/assets')
 def modId = 'applied_slash'
+
+/**
+ * 每组的"面 → 顶点索引"表(供连通块分析)。
+ *
+ * <p>与 `tools/lili-mesh.gradle` 里的同名逻辑**各自独立实现** —— 校验代码如果直接调用被校验对象的实现,
+ * 就变成"自己证明自己"。
+ */
+static Map<String, List<List<Integer>>> parseFaceVertexIndices(File objFile) {
+    def out = [:]
+    String current = null
+    objFile.readLines('UTF-8').each { line ->
+        if (line.startsWith('#')) {
+            return
+        }
+        if (line.startsWith('g ')) {
+            current = line.substring(2).trim()
+            if (!out.containsKey(current)) { out[current] = [] }
+            return
+        }
+        if (!line.startsWith('f ') || current == null) {
+            return
+        }
+        def idx = []
+        line.split(' ').drop(1).each { tok ->
+            def bits = tok.split('/')
+            if (bits.length > 0 && bits[0]) {
+                idx << ((bits[0] as int) - 1)
+            }
+        }
+        if (idx.size() >= 3) {
+            out[current] << idx
+        }
+    }
+    return out
+}
+
+/** 某组的 X 跨度(用该组面引用的顶点坐标算)。 */
+static double groupXSpan(File objFile, String group, Map<String, List<List<Integer>>> facesByGroup) {
+    def verts = []
+    objFile.readLines('UTF-8').each { line ->
+        if (line.startsWith('v ')) {
+            def p = line.split(' ')
+            verts << (p[1] as double)
+        }
+    }
+    double lo = Double.MAX_VALUE
+    double hi = -Double.MAX_VALUE
+    (facesByGroup[group] ?: []).each { face ->
+        face.each { v ->
+            if (v >= 0 && v < verts.size()) {
+                lo = Math.min(lo, verts[v] as double)
+                hi = Math.max(hi, verts[v] as double)
+            }
+        }
+    }
+    return (lo > hi) ? 0.0d : (hi - lo)
+}
+
+/** 一组面的连通块数(并查集:共享任一顶点索引即同块)。 */static int componentCount(List<List<Integer>> faces) {
+    int n = faces.size()
+    if (n == 0) {
+        return 0
+    }
+    def parent = new int[n]
+    for (int i = 0; i < n; i++) {
+        parent[i] = i
+    }
+    def owner = [:]
+    for (int i = 0; i < n; i++) {
+        faces[i].each { v ->
+            if (owner.containsKey(v)) {
+                int a = owner[v]
+                while (parent[a] != a) { a = parent[a] }
+                int b = i
+                while (parent[b] != b) { b = parent[b] }
+                if (a != b) {
+                    parent[a] = b
+                }
+            } else {
+                owner[v] = i
+            }
+        }
+    }
+    def roots = [] as Set
+    for (int i = 0; i < n; i++) {
+        int x = i
+        while (parent[x] != x) { x = parent[x] }
+        roots << x
+    }
+    return roots.size()
+}
+
+
+/**
+ * 解析 OBJ 里各分组的 UV,返回 [组名 -> 面列表],每个面是 `[多边形, 平均u, 平均行]`。
+ *
+ * <p>**与生成器各自独立实现**(`tools/lili-texture.gradle` 里那份不复用)——
+ * 校验代码若直接调用被校验对象的实现,就变成"自己证明自己"。
+ *
+ * <p>行 = `1 - v`:重锋解析 OBJ 时把 v 翻过一次
+ * (`WavefrontObject#parseTextureCoordinate`:fconst_1 + fsub),渲染侧 `Face.uvOperator` 默认恒等。
+ */
+static Map<String, List<List<Object>>> parseUvFaces(File objFile, int w, int h) {
+    def out = [:]
+    def uvs = []
+    String current = null
+    objFile.readLines('UTF-8').each { line ->
+        if (line.startsWith('#')) {
+            return
+        }
+        if (line.startsWith('g ')) {
+            current = line.substring(2).trim()
+            if (!out.containsKey(current)) { out[current] = [] }
+            return
+        }
+        if (line.startsWith('vt ')) {
+            def p = line.split(' ')
+            uvs << ([p[1] as double, p[2] as double])
+            return
+        }
+        if (!line.startsWith('f ') || current == null) {
+            return
+        }
+        def poly = []
+        double su = 0.0d
+        double sr = 0.0d
+        int n = 0
+        line.split(' ').drop(1).each { tok ->
+            def bits = tok.split('/')
+            if (bits.length < 2 || !bits[1]) {
+                return
+            }
+            def uv = uvs[(bits[1] as int) - 1]
+            double row = 1.0d - (uv[1] as double)
+            poly << ([(uv[0] as double) * (w - 1), row * (h - 1)] as List<Double>)
+            su += (uv[0] as double)
+            sr += row
+            n++
+        }
+        if (n >= 3) {
+            out[current] << ([poly, su / n, sr / n] as List<Object>)
+        }
+    }
+    return out
+}
+
+/** 把若干组的面 UV 多边形填成像素掩码(boolean[w*h],行优先)。 */
+static boolean[] rasterizeUv(List<List<List<Object>>> faces, int w, int h) {
+    def img = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_BYTE_GRAY)
+    def g = img.createGraphics()
+    g.setColor(java.awt.Color.BLACK)
+    g.fillRect(0, 0, w, h)
+    g.setColor(java.awt.Color.WHITE)
+    faces.each { face ->
+        def poly = face[0] as List
+        def xs = poly.collect { (int) Math.round((it[0] as double)) } as int[]
+        def ys = poly.collect { (int) Math.round((it[1] as double)) } as int[]
+        g.fillPolygon(xs, ys, xs.length)
+    }
+    g.dispose()
+    def mask = new boolean[w * h]
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            mask[y * w + x] = (img.getRGB(x, y) & 0xFF) > 128
+        }
+    }
+    return mask
+}
+
+/** 按"面的平均 UV"取色(与重锋渲染器的取色规则一致),返回 [平均亮度, 黄金色面数]。 */static double[] sampledStats(Object img, List<List<List<Object>>> faces) {
+    double sum = 0.0d
+    int gold = 0
+    int n = 0
+    int w = img.getWidth()
+    int h = img.getHeight()
+    faces.each { face ->
+        int px = (int) Math.max(0, Math.min(w - 1, Math.round((face[1] as double) * (w - 1))))
+        int py = (int) Math.max(0, Math.min(h - 1, Math.round((face[2] as double) * (h - 1))))
+        def c = new java.awt.Color(img.getRGB(px, py), true)
+        sum += 0.299d * c.red + 0.587d * c.green + 0.114d * c.blue
+        if (c.red >= 200 && c.green >= 150 && c.blue <= 130) {
+            gold++
+        }
+        n++
+    }
+    return [(n == 0 ? 0.0d : sum / n), (double) gold]
+}
+
 
 tasks.register('verifyResources') {
     group = 'verification'
@@ -27,7 +435,8 @@ tasks.register('verifyResources') {
         def vanillaJar = vanillaJars.isEmpty() ? null : vanillaJars.first()
         def ae2Jar = file('libs/ae2-19.2.17.jar')
         notes << "原版 assets jar: ${vanillaJar ?: '未找到(先跑一次 build 生成 createMinecraftArtifacts)'}"
-        def jars = [vanillaJar, ae2Jar].findAll { it != null && it.exists() }
+        def sbJars = fileTree(dir: 'libs', include: ['slashblade-*.jar']).files
+        def jars = ([vanillaJar, ae2Jar] + sbJars).findAll { it != null && it.exists() }
         def jarEntryExists = { String entry ->
             jars.any { j ->
                 def z = new java.util.zip.ZipFile(j)
@@ -166,7 +575,544 @@ tasks.register('verifyResources') {
         }
         notes << "已检查本模组模型 ${ourModels.size()} 个"
 
-        // ---- 5) PNG 头部 ----
+        // ---- 5) 拔刀剑「莉莉」:数据包刀 + 复用丛雨丸的模型与贴图 ----
+        // 莉莉**不是**自定义物品:刀身定义在 data/applied_slash/slashblade/named_blades/lili.json,
+        // 物品是重锋原生的 slashblade:slashblade(渲染/图标全走重锋自己的管线)。
+        // 因此这里要钉死三件事:
+        //   ① 定义 JSON 的字段名与取值。字段名取自重锋 SlashBladeDefinition / PropertiesDefinition /
+        //      RenderDefinition 三个 Codec 里的字符串常量(javap 实证),写错一个字母游戏里就是"这把刀不存在";
+        //   ② 它引用的模型/贴图**文件真的存在**(路径写错 = 重锋加载时抛 ModelFormatException,刀不显示);
+        //   ③ 模型里那 8 个分组名一个都不能少(重锋按组名取几何渲染,少一组就永远少画那一部分)。
+        def liliJson = new File('src/main/resources/data/applied_slash/slashblade/named_blades/lili.json')
+        def liliDef = null
+        if (!liliJson.isFile()) {
+            problems << "莉莉的刀身定义缺失: ${liliJson.path}"
+        } else {
+            try {
+                liliDef = json.parseText(liliJson.getText('UTF-8'))
+            } catch (Exception e) {
+                problems << "莉莉刀身定义 JSON 解析失败: ${e.message}"
+            }
+        }
+        if (liliDef instanceof Map) {
+            def allowedRoot = ['item', 'name', 'properties', 'render', 'enchantments', 'creativeGroup'] as Set
+            def unknownRoot = liliDef.keySet().findAll { !allowedRoot.contains(it) }
+            if (unknownRoot) {
+                problems << "莉莉刀身定义里有未知字段: ${unknownRoot.join(', ')}(重锋的 Codec 不认这些名字)"
+            }
+            if (liliDef.item != 'slashblade:slashblade') {
+                problems << "莉莉的 item 必须是 slashblade:slashblade(实际: ${liliDef.item})"
+            }
+            if (liliDef.name != 'applied_slash:lili') {
+                problems << "莉莉的 name 必须是 applied_slash:lili(它决定语言键 item.applied_slash.lili,实际: ${liliDef.name})"
+            }
+            def ench = liliDef.enchantments
+            if (!(ench instanceof List) || !ench.isEmpty()) {
+                problems << "莉莉必须**没有附魔**:enchantments 应为空数组(实际: ${ench})"
+            }
+            def props = liliDef.properties
+            if (!(props instanceof Map)) {
+                problems << '莉莉刀身定义缺少 properties 块'
+            } else {
+                if (!(props.attack_base instanceof Number)
+                        || Math.abs((props.attack_base as double) - 14.13d) > 1.0e-9d) {
+                    problems << "莉莉的 attack_base 必须是 14.13(实际: ${props.attack_base})"
+                }
+                if (props.slash_art != 'slashblade:drive_horizontal') {
+                    problems << "莉莉的 SA 应为 slashblade:drive_horizontal(幻影刃)(实际: ${props.slash_art})"
+                }
+                // SE:莉莉**恰好**带一个 —— 我们自己的「背包伤害转移」(旧的"必须为空"已不适用)。
+                def se = props.special_effects
+                def expectedSe = ['applied_slash:inventory_transfer']
+                if (!(se instanceof List) || !(se.collect { it.toString() } == expectedSe)) {
+                    problems << "莉莉的 SE 列表应为 [applied_slash:inventory_transfer](实际: ${se})"
+                }
+                def st = props.sword_type
+                if (st == null || !(st instanceof List) || !(st.collect { it.toString() } == ['bewitched'])) {
+                    problems << "莉莉的 sword_type 应为 ['bewitched'](妖刀;白狐同款)(实际: ${st})"
+                }
+                if (!(props.max_damage instanceof Number)) {
+                    problems << '莉莉缺少 max_damage(耐久上限)'
+                }
+                notes << String.format('莉莉定义 OK: attack_base=%s SA(幻影刃)=%s sword_type=妖刀 SE=%s max_damage=%s',
+                        props.attack_base, props.slash_art, props.special_effects, props.max_damage)
+            }
+            def render = liliDef.render
+            if (!(render instanceof Map)) {
+                problems << '莉莉刀身定义缺少 render 块'
+            } else {
+                [['model', render.model], ['texture', render.texture]].each { pair ->
+                    def raw = pair[1] as String
+                    if (raw == null || !raw.contains(':')) {
+                        problems << "莉莉的 render.${pair[0]} 必须是带命名空间的路径(实际: ${raw})"
+                        return
+                    }
+                    def ns = raw.substring(0, raw.indexOf(':'))
+                    def p = raw.substring(raw.indexOf(':') + 1)
+                    if (ns == modId) {
+                        def target = new File("src/main/resources/assets/${ns}/${p}")
+                        if (!target.isFile()) {
+                            problems << "莉莉的 render.${pair[0]} 指向的文件不存在: ${target.path}"
+                        } else {
+                            notes << "莉莉资产存在 OK: ${pair[0]} = ${raw}(自有素材)"
+                        }
+                    } else if (!jarEntryExists("assets/${ns}/${p}")) {
+                        problems << "莉莉的 render.${pair[0]} 指向 ${raw},但在 ${ns} 的 jar 里找不到该条目"
+                    } else {
+                        notes << "莉莉资产存在 OK: ${pair[0]} = ${raw}(引用 ${ns} 的 jar,不复制对方素材)"
+                    }
+                }
+            }
+        }
+
+        // 复用资产本身的完整性:8 个分组名 + 贴图是合法 PNG
+        def liliObj = new File('src/main/resources/assets/applied_slash/models/lili/lili.obj')
+        def liliPng = new File('src/main/resources/assets/applied_slash/models/lili/lili.png')
+        def requiredGroups = ['blade', 'blade_damaged', 'blade_fragment', 'effect',
+                              'sheath', 'item_blade', 'item_bladens', 'item_damaged'] as Set
+        if (!liliObj.isFile()) {
+            problems << "莉莉的模型文件缺失: ${liliObj.path}"
+        } else {
+            def groups = [] as Set
+            int vCount = 0, fCount = 0
+            liliObj.readLines('UTF-8').each { line ->
+                if (line.startsWith('g ')) {
+                    groups << line.substring(2).trim()
+                } else if (line.startsWith('v ')) {
+                    vCount++
+                } else if (line.startsWith('f ')) {
+                    fCount++
+                }
+            }
+            def missing = requiredGroups.findAll { !groups.contains(it) }
+            if (missing) {
+                problems << "莉莉的模型缺少分组: ${missing.join(', ')}(重锋按组名取几何,少一组就少画一部分)"
+            }
+            if (vCount < 100 || fCount < 100) {
+                problems << "莉莉的模型顶点/面数异常: v=${vCount} f=${fCount}"
+            }
+            notes << "莉莉模型 OK: ${liliObj.name} 分组 ${groups.size()} 个(含 sheath)v=${vCount} f=${fCount}"
+        }
+
+        // ---- 5-BLADES) 三把新刀(枫/栞/星奈)的定义断言(与莉莉同一套机制)----
+        // 表:文件名 -> [期望 attack_base, 期望 SA, 显示名]
+        def bladeTable = [
+                'kaede' : ['15.8', 'slashblade:wave_edge', '枫'],
+                'shiori': ['13.2', 'slashblade:piercing', '栞'],
+                'seina' : ['14.0', 'slashblade:void_slash', '星奈']]
+        bladeTable.each { file, expect ->
+            def f = new File(project.projectDir,
+                    "src/main/resources/data/applied_slash/slashblade/named_blades/${file}.json")
+            if (!f.isFile()) {
+                problems << "缺少刀身定义 ${file}.json(${expect[2]})"
+                return
+            }
+            def defJson = new groovy.json.JsonSlurper().parseText(f.getText('UTF-8'))
+            def props = defJson.properties
+            def render = defJson.render
+            if (props?.attack_base?.toString() != expect[0]) {
+                problems << "${expect[2]} 的 attack_base 应为 ${expect[0]}(实际 ${props?.attack_base})"
+            }
+            if (props?.slash_art != expect[1]) {
+                problems << "${expect[2]} 的 SA 应为 ${expect[1]}(实际 ${props?.slash_art})"
+            }
+            if (!(props?.special_effects?.collect { it.toString() } == ['applied_slash:inventory_transfer'])) {
+                problems << "${expect[2]} 的 SE 应与莉莉相同(实际 ${props?.special_effects})"
+            }
+            if (!(props?.sword_type?.collect { it.toString() } == ['bewitched'])) {
+                problems << "${expect[2]} 应为妖刀 sword_type=[bewitched](实际 ${props?.sword_type})"
+            }
+            if (render?.model != 'slashblade:model/named/sange/sange.obj') {
+                problems << "${expect[2]} 的模型应为 sange.obj(与莉莉同一套几何)"
+            }
+            def tex = render?.texture?.toString()
+            if (tex == null || !tex.startsWith(modId + ':')) {
+                problems << "${expect[2]} 的贴图应是我们自己的 UV 图集(实际 ${tex})"
+            } else {
+                def rel = 'src/main/resources/assets/' + tex.replace(':', '/').replaceAll(/\/[^\/]+$/, '') +
+                        '/' + tex.replaceAll(/.*\//, '')
+                def texFile = new File(project.projectDir, rel)
+                if (!texFile.isFile()) {
+                    problems << "${expect[2]} 的贴图文件不存在: ${rel}"
+                } else {
+                    notes << "刀身 OK: ${expect[2]}(${file}) attack=${expect[0]} SA=${expect[1]} 贴图=${tex}"
+                }
+            }
+        }
+        // ---- 5-ATLAS) 三张刀身图集必须都存在、尺寸一致、且**互不相同** ----
+        // 起因:三张图集与莉莉只差立绘岛 ⇒ 若染色没跑/跑错,四把刀手持时看不出区别却没人发现。
+        def atlasIds = ['kaede', 'shiori', 'seina']
+        def atlasDigest = [:]
+        atlasIds.each { id ->
+            def f = new File(project.projectDir, "src/main/resources/assets/applied_slash/models/${id}/uv.png")
+            if (!f.isFile()) {
+                problems << "缺少刀身图集: models/${id}/uv.png"
+                return
+            }
+            def b = f.getBytes()
+            def w = ((b[16] & 0xFF) << 24) | ((b[17] & 0xFF) << 16) | ((b[18] & 0xFF) << 8) | (b[19] & 0xFF)
+            def h = ((b[20] & 0xFF) << 24) | ((b[21] & 0xFF) << 16) | ((b[22] & 0xFF) << 8) | (b[23] & 0xFF)
+            atlasDigest[id] = java.security.MessageDigest.getInstance('SHA-256').digest(b).encodeHex().toString()
+            notes << "刀身图集 OK: ${id} ${w}x${h}"
+        }
+        if (atlasDigest.size() == 3) {
+            if (atlasDigest.values().toSet().size() != 3) {
+                problems << "三张刀身图集存在完全相同的文件(染色没生效?)"
+            } else {
+                notes << '三张刀身图集互不相同 OK(定向染色已生效)'
+            }
+        }
+        // ---- 5-CT) 每个注册的物品都必须出现在创造栏 displayItems 里 ----
+        // 起因:手持「Slash 元件」注册了、模型也在,但忘记 output.accept(...) ⇒ 创造栏里根本看不到。
+        // 这类"注册了但没上架"的疏漏用静态检查挡住,比进游戏才发现划算。
+        def ae2Src = new File('src/main/java/com/applied/slash/AppliedSlashAe2.java')
+        def mainSrc = new File('src/main/java/com/applied/slash/AppliedSlash.java')
+        if (ae2Src.isFile() && mainSrc.isFile()) {
+            def ae2Text = ae2Src.getText('UTF-8')
+            def mainText = mainSrc.getText('UTF-8')
+            def regItem = ~/(?m)DeferredItem<[^>]+>\s+([A-Z0-9_]+)\s*=\s*ITEMS\.registerItem\(\s*"([a-z0-9_]+)"/
+            def regMatcher = regItem.matcher(ae2Text)
+            while (regMatcher.find()) {
+                def field = regMatcher.group(1)
+                def id = regMatcher.group(2)
+                def acceptPat = java.util.regex.Pattern.compile('accept\\([^)]*' + java.util.regex.Pattern.quote(field) + '\\.get\\(\\)')
+                if (!acceptPat.matcher(mainText).find()) {
+                    problems << "物品 ${id}(${field})已注册但没有放进创造栏 displayItems(output.accept(...))"
+                } else {
+                    notes << "创造栏上架 OK: ${id}"
+                }
+            }
+        }
+        // ---- 5-SE) 莉莉的 special_effects 必须在代码里注册(防"JSON 写了但没注册")----
+        def seIds = (liliDef?.properties?.special_effects ?: []) as List
+        def seSources = new StringBuilder()
+        new File('src/main/java').eachFileRecurse { f ->
+            if (f.name.endsWith('.java')) { seSources.append(f.getText('UTF-8')) }
+        }
+        seIds.each { rawId ->
+            def id = rawId.toString()
+            def path = id.contains(':') ? id.substring(id.indexOf(':') + 1) : id
+            if (!seSources.toString().contains('"' + path + '"')) {
+                problems << "莉莉的 SE ${id} 在代码里找不到注册(register(\"${path}\"...))"
+            } else {
+                notes << "莉莉 SE OK: ${id} 已在代码里注册"
+            }
+        }
+
+        // ---- 5a) 鞘壳几何的断言:圆柱化 + 只动鞘 + 其余组一个面都没动 ----
+        // 生成器是 tools/lili-mesh.gradle(gradlew generateLiliMesh)。这里独立复核四件事:
+        //   ① 鞘只剩 1 个连通块(金属环/栗形/下绪那 301 面已删);
+        //   ② 鞘是**圆柱**:绕圈段数 ≥ 16 且相邻纵向面的法线夹角 ≤ 30°(≈22.5°/段);
+        //   ③ 鞘仍是整根(X 跨度 ≥ 250,实测 260.8);
+        //   ④ 其余 7 个组的面数与原始存档 art/lili_source.obj **逐组相等**(没误删)。
+        def liliSourceObj = new File('art/lili_source.obj')
+        if (!liliSourceObj.isFile()) {
+            problems << '缺少模型的原始存档 art/lili_source.obj(裁剪与回滚都依赖它)'
+        } else if (liliObj.isFile()) {
+            def targetFaces = parseFaceVertexIndices(liliObj)
+            def sourceFaces = parseFaceVertexIndices(liliSourceObj)
+            def meshGroups = ['blade', 'blade_damaged', 'blade_fragment', 'effect', 'sheath',
+                              'item_blade', 'item_bladens', 'item_damaged']
+            def mismatch = []
+            meshGroups.each { g ->
+                int a = (targetFaces[g] ?: []).size()
+                int b = (sourceFaces[g] ?: []).size()
+                if (g == 'sheath') {
+                    return
+                }
+                if (a != b) {
+                    mismatch << "${g}: ${b}→${a}"
+                }
+            }
+            if (mismatch) {
+                problems << "模型裁剪动了不该动的组(面数变化 ${mismatch.join(', ')}):只有 sheath 组允许少面"
+            }
+            int sheathFaces = (targetFaces['sheath'] ?: []).size()
+            int sheathSourceFaces = (sourceFaces['sheath'] ?: []).size()
+            int blocks = componentCount(targetFaces['sheath'] ?: [])
+            if (blocks != 1) {
+                problems << "鞘组仍有 ${blocks} 个连通块(应为 1):金属环/栗形/下绪没有删干净"
+            }
+            if (sheathFaces < 20 || sheathFaces >= sheathSourceFaces) {
+                problems << String.format('鞘组面数 %d 异常(原 %d):应少于原值且留下整根壳', sheathFaces, sheathSourceFaces)
+            }
+            def span = groupXSpan(liliObj, 'sheath', targetFaces)
+            if (span < 250.0d) {
+                problems << String.format('鞘组的 X 跨度只有 %.1f(应 ≥ 250):留下的不是整根壳', span)
+            }
+            // 圆柱化那套断言(绕圈段数 / 相邻面夹角)属于"圆柱重建"版本,已随功能回退撤下;
+            // 这里仍然把夹角度量出来记进 notes,方便以后重做时对照。
+            def facet = facetStats(liliObj, targetFaces)
+            int segments = facet[0] as int
+            double maxAngle = facet[1] as double
+            notes << String.format('鞘壳 OK: %d → %d 面(连通块 %d,X 跨度 %.1f;当前壳绕圈 %d 段,相邻面夹角最大 %.1f° — 圆柱重建已回退;其余 7 组面数与源存档一致)',
+                    sheathSourceFaces, sheathFaces, blocks, span, segments, maxAngle)
+        }
+        if (!liliPng.isFile()) {
+            problems << "莉莉的贴图文件缺失: ${liliPng.path}"
+        } else {
+            def b = liliPng.bytes
+            if (b.length < 33 || (b[0] & 0xFF) != 0x89 || b[1] != 0x50 || b[2] != 0x4E || b[3] != 0x47) {
+                problems << "莉莉的贴图不是合法 PNG: ${liliPng.name}"
+            } else {
+                int w = ((b[16] & 0xFF) << 24) | ((b[17] & 0xFF) << 16) | ((b[18] & 0xFF) << 8) | (b[19] & 0xFF)
+                int h = ((b[20] & 0xFF) << 24) | ((b[21] & 0xFF) << 16) | ((b[22] & 0xFF) << 8) | (b[23] & 0xFF)
+                notes << "莉莉贴图 OK: ${liliPng.name} ${w}×${h} bit=${b[24] & 0xFF} colorType=${b[25] & 0xFF}"
+            }
+        }
+
+        // ---- 5b) 鞘贴图重绘的断言(象牙白 + 金箍)----
+        // 生成器是 tools/lili-texture.gradle;这里**另写一份**解析与光栅化(见 parseUvFaces 的注释),
+        // 否则就是"自己证明自己"。四条硬约束:
+        //   ① 掩码外一个像素都不许变(原始像素来自 art/lili_source.png);
+        //   ② 与刀身共用的像素一个都不许变(否则刀身会被连带改色);
+        //   ③ 鞘确实被上了色(变了颜色 / 掩码内像素数 ≥ 60%);
+        //   ④ 可读性:鞘的平均亮度必须显著高于刀身(否则游戏里又"看不出鞘"),且金箍真的存在。
+        def liliSourcePng = new File('art/lili_source.png')
+        def liliOwnTexture = (liliDef?.render?.texture as String) == (modId + ':models/lili/lili.png')
+        if (!liliOwnTexture) {
+            notes << '莉莉当前使用的不是丛雨丸那套贴图(模型引用重锋 sange / 贴图用自绘 UV 图集)⇒ 跳过丛雨丸专项断言;该贴图的对位与采样由 gradlew foxCheck 负责'
+        } else if (!liliSourcePng.isFile()) {
+            problems << '缺少鞘贴图的原始存档 art/lili_source.png(重绘与回滚都依赖它)'
+        } else if (liliObj.isFile() && liliPng.isFile()) {
+            def srcImg = javax.imageio.ImageIO.read(liliSourcePng)
+            def dstImg = javax.imageio.ImageIO.read(liliPng)
+            if (srcImg == null || dstImg == null) {
+                problems << '莉莉贴图或原始存档读取失败'
+            } else if (dstImg.width != srcImg.width * 2 || dstImg.height != srcImg.height * 2) {
+                // 回退版:底图 = 原始素材 **2× 最近邻放大**,UV 不动 ⇒ 尺寸必须是恰好 2 倍。
+                problems << "莉莉贴图应是原始素材的 2 倍(512×1024): ${dstImg.width}×${dstImg.height} vs ${srcImg.width}×${srcImg.height}"
+            } else {
+                int tw = dstImg.width
+                int th = dstImg.height
+                // 期望像素 = 原始素材 2× 最近邻放大后对应位置(与生成器手写最近邻一致)
+                def uvFaces = parseUvFaces(liliObj, tw, th)
+                def sheathFaces = uvFaces['sheath'] ?: []
+                def bladeFaces = []
+                ['blade', 'blade_damaged', 'blade_fragment'].each { g ->
+                    def list = uvFaces[g]
+                    if (list != null) { bladeFaces.addAll(list) }
+                }
+                boolean[] sheathMask = rasterizeUv(sheathFaces, tw, th)
+                boolean[] bladeMask = rasterizeUv(bladeFaces, tw, th)
+
+                int changedTotal = 0
+                int changedOutside = 0
+                int changedShared = 0
+                int maskPixels = 0
+                int maskChanged = 0
+                // 容差口径:通道差 ≤ 1 视为未变(最近邻放大在预乘 alpha 换算上会有 ±1 舍入);
+                // 变化只允许落在鞘掩码 +1 px 膨胀范围内(两套光栅化在面边界上会差一两个像素)。
+                boolean[] sheathMaskDilated = dilateMask(sheathMask, tw, th, 1)
+                boolean[] bladeMaskCore = erodeMask(bladeMask, tw, th, 1)
+                for (int y = 0; y < th; y++) {
+                    for (int x = 0; x < tw; x++) {
+                        int i = y * tw + x
+                        if (sheathMask[i]) {
+                            maskPixels++
+                        }
+                        // 期望 = 源图 (x/2, y/2) 的像素(Groovy 的 `/` 返回 BigDecimal,先取整)
+                        int sx0 = Math.min(srcImg.width - 1, (int) (x / 2))
+                        int sy0 = Math.min(srcImg.height - 1, (int) (y / 2))
+                        boolean differs = maxChannelDiff(srcImg.getRGB(sx0, sy0), dstImg.getRGB(x, y)) > 1
+                        if (differs) {
+                            changedTotal++
+                            if (!sheathMaskDilated[i]) {
+                                changedOutside++
+                            }
+                            if (bladeMaskCore[i]) {
+                                changedShared++
+                            }
+                            if (sheathMask[i]) {
+                                maskChanged++
+                            }
+                        }
+                    }
+                }
+
+                if (changedShared > 0) {
+                    problems << "鞘贴图重绘动到了与刀身共用的 ${changedShared} px(刀身真正用到的内部像素):刀身会跟着变色"
+                }
+                if (changedOutside > 0) {
+                    problems << "鞘贴图重绘改了掩码外的 ${changedOutside} px(超出鞘掩码 +1 px 膨胀范围):只允许改 sheath 组用到的像素"
+                }
+                if (maskPixels > 0 && maskChanged < (int) (maskPixels * 0.6d)) {
+                    problems << String.format('鞘贴图几乎没有被上色:掩码内 %d px 只有 %d px 变了(应 ≥ 60%%)',
+                            maskPixels, maskChanged)
+                }
+
+                // ---- 没有任何面可以采样到**透明**像素(且必须与原素材逐组对比)----
+                // 这是实测踩过的严重 bug:图集重排后某些组的 UV 落进了"空白(α=0)"区域,
+                // 游戏里那些部位直接变透明/变黑(用户截图:刀身整个没了)。
+                // 判据:每个面的平均 UV 采样点(行 = 1-v;方向已由"鎺的亮绿像素"实证)必须不透明;
+                // 但还要和**原素材**(art/lili_source.obj + art/lili_source.png)逐组比 ——
+                // 有些组在原版就采样透明像素(例如发光层 effect),那不是回归。
+                int transparentFaces = 0
+                def offenders = []
+                def originalTrans = countTransparentFaces(liliSourceObj, srcImg, 1.0d, 0.0d, 0.0d, 0.0d)
+                uvFaces.each { g, list ->
+                    int bad = 0
+                    list.each { face ->
+                        int px = (int) Math.max(0, Math.min(tw - 1, Math.round((face[1] as double) * (tw - 1))))
+                        int py = (int) Math.max(0, Math.min(th - 1, Math.round((face[2] as double) * (th - 1))))
+                        def c = new java.awt.Color(dstImg.getRGB(px, py), true)
+                        if (c.alpha < 128) {
+                            bad++
+                        }
+                    }
+                    int badBefore = (originalTrans[g] ?: 0) as int
+                    if (bad > badBefore) {
+                        def ex = list.find { face ->
+                            int px = (int) Math.max(0, Math.min(tw - 1, Math.round((face[1] as double) * (tw - 1))))
+                            int py = (int) Math.max(0, Math.min(th - 1, Math.round((face[2] as double) * (th - 1))))
+                            new java.awt.Color(dstImg.getRGB(px, py), true).alpha < 128
+                        }
+                        offenders << String.format('%s: %d(原版 %d)/%d UV矩形 %s 例 uv=%.3f,%.3f→px %d,%d',
+                                g, bad, badBefore, list.size(), uvRect(list).join(','),
+                                (ex[1] as double), (ex[2] as double),
+                                (int) Math.max(0, Math.min(tw - 1, Math.round((ex[1] as double) * (tw - 1)))),
+                                (int) Math.max(0, Math.min(th - 1, Math.round((ex[2] as double) * (th - 1)))))
+                        transparentFaces += (bad - badBefore)
+                    }
+                }
+                if (transparentFaces > 0) {
+                    problems << "比原版多出 ${transparentFaces} 个面采样到透明像素(${offenders.join('; ')}):" +
+                            '这些部位在游戏里会变透明/变黑 —— 检查图集布局与该组的 UV 重映射'
+                } else {
+                    int totalFaces = 0
+                    uvFaces.each { g, list -> totalFaces += list.size() }
+                    notes << String.format('图集采样 OK: %d 个面没有比原版更多地采样到透明像素(原版透明面 %s)',
+                            totalFaces, originalTrans.findAll { it.value > 0 }.toString())
+                }
+
+                // 亮度口径说明:用**掩码像素的平均亮度**,而不是"面的平均亮度"。
+                // 原因:鞘的 357 个面里有 282 个取到金色(鞘口段 + 端面),但其中绝大多数是内层/端面,
+                // 侧视时被外壳挡住 ⇒ 按面平均会把"看不见的金"也算进去,把数字压低(实测 185 vs 掩码 218)。
+                double maskLum = 0.0d
+                int goldPixels = 0
+                for (int y = 0; y < th; y++) {
+                    for (int x = 0; x < tw; x++) {
+                        int i = y * tw + x
+                        if (!sheathMask[i]) {
+                            continue
+                        }
+                        def c = new java.awt.Color(dstImg.getRGB(x, y), true)
+                        maskLum += 0.299d * c.red + 0.587d * c.green + 0.114d * c.blue
+                        if (c.red >= 200 && c.green >= 150 && c.blue <= 130) {
+                            goldPixels++
+                        }
+                    }
+                }
+                maskLum = maskPixels == 0 ? 0.0d : maskLum / maskPixels
+                def sheathStats = sampledStats(dstImg, sheathFaces)
+                def bladeStats = sampledStats(dstImg, bladeFaces)
+                double bladeLum = bladeStats[0]
+                double goldShare = maskPixels == 0 ? 0.0d : goldPixels / (double) maskPixels
+
+                // 鞘的平均色与刀身的平均色:用"RGB 距离"而不是"亮度地板"做判据 ——
+                // 亮度地板(曾经要求 ≥ 200)只适用于象牙白那种浅色底;换成粉黛色调的纹样后
+                // 亮度天然更低(实测 ~190),卡亮度会误报,而"与刀身颜色差得开"才是真正要保的性质。
+                double[] maskRgb = maskAverageRgb(dstImg, sheathMask, tw, th)
+                double[] bladeRgb = faceAverageRgb(dstImg, bladeFaces)
+                double rgbDistance = Math.sqrt(Math.pow(maskRgb[0] - bladeRgb[0], 2.0d)
+                        + Math.pow(maskRgb[1] - bladeRgb[1], 2.0d)
+                        + Math.pow(maskRgb[2] - bladeRgb[2], 2.0d))
+                // ---- 全覆盖:鞘的 UV 区域里"纯白底"占比必须很小 ----
+                // 用户的要求是"刀鞘全覆盖,不要出现只覆盖一部分、其他是纯色"。
+                // 用**近白像素占比**做判据(比"非主色占比"更贴字面:白底就是纯色);
+                // 生成器用"统一缩放 + 水平镜像 + 多层纵向错位 darken"把底填掉。
+                int plain = 0
+                for (int y = 0; y < th; y++) {
+                    for (int x = 0; x < tw; x++) {
+                        if (!sheathMask[y * tw + x]) {
+                            continue
+                        }
+                        def c = new java.awt.Color(dstImg.getRGB(x, y), true)
+                        if (c.red > 232 && c.green > 232 && c.blue > 232) {
+                            plain++
+                        }
+                    }
+                }
+                double plainShare = maskPixels == 0 ? 0.0d : plain / (double) maskPixels
+                // 回退版:纹样按原图疏密铺,白底(~38%)是刻意保留的观感 ⇒ 只记录不判失败。
+                // (想要"满铺不留白"时用 -PsayaArtLayers=3,那套断言留给圆柱+图集版本。)
+
+                // ---- 无缝:区域左右边界列(绕鞘一周的接缝)色差必须接近 0 ----
+                // 注意不要用"每行第一个/最后一个掩码列":那些行里掩码可能只覆盖区域的一部分,
+                // 比较的就是完全无关的两列(实测会报出 11.7 的假警报)。接缝就是区域边界这一条。
+                int[] sayaRect = uvRect(sheathFaces)
+                int seamColLeft = sayaRect[0]
+                int seamColRight = sayaRect[2]
+                double seam = 0.0d
+                int seamRows = 0
+                for (int y = 0; y < th; y++) {
+                    if (!sheathMask[y * tw + seamColLeft] || !sheathMask[y * tw + seamColRight]) {
+                        continue
+                    }
+                    seam += maxChannelDiff(dstImg.getRGB(seamColLeft, y), dstImg.getRGB(seamColRight, y))
+                    seamRows++
+                }
+                seam = seamRows == 0 ? 0.0d : seam / seamRows
+                if (seam > 6.0d) {
+                    problems << String.format('鞘区域首尾接缝色差 %.1f(应 ≤ 6):绕鞘一周会看到一条竖缝', seam)
+                }
+
+                // ---- 区域重叠:回退版的鞘 UV 就是丛雨丸原本那块区域,与刀身组**本来就有共用像素**
+                //      (实测 534 px,由上面的"共用像素改动 0"断言保证没被动过)⇒ 这里只统计不判失败。
+                def overlaps = []
+                ['blade', 'blade_damaged', 'blade_fragment', 'effect',
+                 'item_blade', 'item_bladens', 'item_damaged'].each { g ->
+                    def list = uvFaces[g]
+                    if (list == null || list.isEmpty()) {
+                        return
+                    }
+                    int[] r = uvRect(list)
+                    boolean overlap = sayaRect[0] <= r[2] && r[0] <= sayaRect[2]
+                            && sayaRect[1] <= r[3] && r[1] <= sayaRect[3]
+                    if (overlap) {
+                        overlaps << "${g} ${r.join(',')}"
+                    }
+                }
+
+                if (rgbDistance < 60.0d) {
+                    problems << String.format('鞘与刀身的颜色太接近(RGB 距离 %.1f < 60:鞘 (%.0f,%.0f,%.0f) / 刀身 (%.0f,%.0f,%.0f)):'
+                            + '对比不足 ⇒ 游戏里读不出鞘',
+                            rgbDistance, maskRgb[0], maskRgb[1], maskRgb[2], bladeRgb[0], bladeRgb[1], bladeRgb[2])
+                }
+                if (Math.abs(maskLum - bladeLum) < 15.0d) {
+                    problems << String.format('鞘与刀身的亮度几乎一样(鞘 %.1f / 刀身 %.1f):'
+                            + '粉黛色调也要有明暗差,否则鞘会糊在刀身上', maskLum, bladeLum)
+                }
+                notes << String.format('鞘贴图 OK: 掩码 %d px(改了 %d)/ 共用像素改动 %d / 掩码外改动 %d;'
+                        + '近白底 %.1f%%(仅记录,回退版保留原图疏密)/ 首尾接缝 %.1f(要求 ≤ 6);'
+                        + '鞘 (%.0f,%.0f,%.0f) 亮度 %.1f vs 刀身 (%.0f,%.0f,%.0f) 亮度 %.1f(RGB 距离 %.1f);'
+                        + '鞘 UV 与其它组重叠情况 %s(仅记录)',
+                        maskPixels, maskChanged, changedShared, changedOutside,
+                        plainShare * 100.0d, seam,
+                        maskRgb[0], maskRgb[1], maskRgb[2], maskLum,
+                        bladeRgb[0], bladeRgb[1], bladeRgb[2], bladeLum, rgbDistance,
+                        overlaps.isEmpty() ? '无' : overlaps.join('; '))
+            }
+        }
+
+        // 删干净:5 把自设充能刀的资产、几何目录、粒子都该消失
+        def residue = []
+        new File('src/main/resources').eachFileRecurse { f ->
+            if (f.name.contains('charged_blade') || f.name.startsWith('butterfly')) {
+                residue << f.name
+            }
+        }
+        if (residue) {
+            problems << "仍存在充能刀 / 蝴蝶粒子资产: ${residue.join(', ')}"
+        }
+        if (new File('src/main/resources/assets/applied_slash/model/blade').exists()) {
+            problems << 'model/blade 目录仍存在:自设刀身几何没有删干净'
+        }
+        if (!residue && !new File('src/main/resources/assets/applied_slash/model/blade').exists()) {
+            notes << '删除干净 OK: 无 charged_blade / butterfly 资产,无 model/blade 目录'
+        }
+
+        // ---- 8) PNG 头部 ----
         def pngs = []
         texturesDir.eachFileRecurse { f -> if (f.name.endsWith('.png')) { pngs << f } }
         pngs.each { f ->
@@ -183,13 +1129,17 @@ tasks.register('verifyResources') {
             int bitDepth = b[24] & 0xFF
             int colorType = b[25] & 0xFF
             int interlace = b[28] & 0xFF
-            if (w != 16 || h != 16) {
-                problems << "PNG 尺寸不是 16x16: ${f.name} -> ${w}x${h}"
+            // 尺寸口径:方块/驱动器贴图仍是 16x16;三个**物品图标**统一为 32x32
+            // (用户的图标是高分辨率图,16x16 会被面积平均糊掉 —— 见 tools/item-icons.gradle)
+            def itemIcons = ['portable_slash_cell.png', 'unstackable_cell.png', 'slash_blade_cell.png'] as Set
+            int expect = itemIcons.contains(f.name) ? 32 : 16
+            if (w != expect || h != expect) {
+                problems << "PNG 尺寸不对(应为 ${expect}x${expect}): ${f.name} -> ${w}x${h}"
             }
             if (bitDepth != 8 || interlace != 0) {
                 problems << "PNG 格式不常规: ${f.name} bitDepth=${bitDepth} colorType=${colorType} interlace=${interlace}"
             }
-            notes << "PNG OK: ${f.name} 16x16/8bit/colorType=${colorType}/非交错"
+            notes << "PNG OK: ${f.name} ${w}x${h}/8bit/colorType=${colorType}/非交错"
         }
 
         println '===== verifyResources ====='

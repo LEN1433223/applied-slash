@@ -186,6 +186,24 @@ public class AppliedSlashClient {
     }
 
     /**
+     * <b>刻意没有</b> {@code RegisterClientReloadListenersEvent} 的处理器 —— 这里记下为什么。
+     *
+     * <p>充电器界面会把样式文档({@code assets/applied_slash/screens/blade_charger.json},含 AE2 调色板)
+     * 解析结果缓存起来,理论上切资源包 / {@code F3+T} 之后需要失效。我最初为此注册了一个
+     * {@code PreparableReloadListener},结果客户端**卡死在加载界面**:线程转储显示
+     * {@code pendingReload=null}(Minecraft 层面的首次资源重载压根没开始)、
+     * 任何线程栈里都没有本模组的帧,而 NeoForge 的加载遮罩一直挂着。
+     * 开发客户端的启动日志对照更直接:今天该处理器加进来之前的每一次启动都进了标题界面,
+     * 加进来之后的每一次都卡在模型烘焙之后。删掉之后恢复正常。
+     *
+     * <p>代价与替代方案:缓存**只在一次会话内**有效,所以「开着客户端切资源包」时充能器界面
+     * 可能仍用旧色值(重启客户端即恢复)。真要修,正确做法是给监听器接上
+     * {@code PreparationBarrier}({@code barrier.wait(Unit.INSTANCE)} 之后再切换),而不是裸
+     * {@code runAsync} —— 但那条路在 NeoForge 21.1 的加载时序上还有别的坑,而收益只是"切包即生效",
+     * 因此这里选择不做,而不是留一个会卡死加载的处理器。
+     */
+
+    /**
      * 反射读 {@code Minecraft.pendingReload} 的状态 —— 它是"资源重载完成的未来",
      * 加载遮罩只有在它正常完成后才会被撤掉。卡死时这个字段的取值就是判据。
      */

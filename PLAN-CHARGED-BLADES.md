@@ -1,5 +1,10 @@
 # PLAN-CHARGED-BLADES — 5 把「充能拔刀剑」+ AE 充能方块（方案 v1，A 阶段）
 
+> **现状(2026-02,mod 1.2.0)**:本文件描述的 **5 把充能拔刀剑及其全部下游代码已整体删除**
+> (旧存档里它们会变成未知物品),取而代之的是一把**数据包刀「莉莉」**(见 README 与 `THIRD-PARTY-NOTICES.md`)。
+> **AE 充能方块(充能器)保留**,但改口径为"为**任意**拔刀剑充能",配置项已改名收敛。
+> 本文件保留为历史设计记录,其中的方案与取舍**不再代表当前代码**。
+
 - 项目根：`D:\Agnet_all\Agnet_mod2\appliedslash-template-1.21.1`
 - 平台：**NeoForge 21.1.250 / MC 1.21.1 / Java 21**（现代线 1.20.5–1.21.x：JDK 21、`META-INF/neoforge.mods.toml`、ModDevGradle 2.0.147）
 - 前置：AE2 `19.2.17`、GuideME `21.1.14`、SlashBlade: Resharpened `2.0.7-1.21.1`（本方案后两者与 AE2 全部改为 **required**）

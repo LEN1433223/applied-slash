@@ -96,13 +96,13 @@ AE2 Slash Storage / Applied Slash
     side="BOTH"
 
 # ---- Applied Slash 前置：SlashBlade: Resharpened（拔刀剑本体）----
-# 声明为 required：5 把充能拔刀剑继承 ItemSlashBlade，刀身数据是刀的核心状态。
+# 声明为 required：刀身定义(含「莉莉」)、存储元件的刀的识别与刀身数据都来自重锋。
 # ⚠ 破坏性变更：未装 SlashBlade 的现有用户升级后会被 FML 拦下启动。
 # 代码门卫同样保留，理由是类加载隔离（见上）。
 [[dependencies.${mod_id}]]
     modId="slashblade"
     type="required"
-    reason="5 把充能拔刀剑继承 ItemSlashBlade，刀身数据是刀的核心状态"
+    reason="存储元件需要重锋的刀身数据与物品类型;本模组的拔刀剑「莉莉」也是用重锋的数据包定义注册的"
     versionRange="[2.0.7,)"
     ordering="AFTER"
     side="BOTH"

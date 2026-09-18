@@ -47,6 +47,13 @@ libs/*.jar
 
 ### 贴图源图:单张 2–3 MB。要留在仓库就走 Git LFS;不上传则删掉本行
 art/*.png
+### 例外:莉莉刀鞘的**原始素材存档**(贴图 16 KB + 模型 78 KB)。必须入库 ——
+### `tools/lili-texture.gradle` 的重新着色与 `tools/lili-mesh.gradle` 的裁剪都以它们为源,
+### `verifyResources` 也断言它们存在;缺了就无法复现/回滚鞘的配色与几何。
+!art/lili_source.png
+!art/lili_source.obj
+### 白狐贴图的三张源素材(3-4 MB/张):不入库,只入库合成产物
+art/fox_source/
 
 ### 本机工作用的素材暂存目录(不属于项目)
 贴图/
@@ -64,3 +71,10 @@ screenshots/
 *.rej
 Thumbs.db
 
+
+### 【仅本地试验】以重锋 ARR 素材 white.png 为模板的衍生贴图:禁止入库/发布
+**/fox_local.png
+
+### 刀身图集备份(576x1152,合计 1.5 MB):入库 —— bladeTint 每次从这里重算,保证幂等
+!art/blade_atlases_src/
+!art/blade_atlases_src/*.png

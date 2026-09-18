@@ -1,0 +1,47 @@
+// CI 依赖解析探针(init script,不参与正式构建)
+//
+// 背景:GitHub runner 上没有 libs/*.jar(被 .gitignore 排除),build.gradle 会回退到 Maven 坐标。
+// 本探针独立于"libs 是否存在",直接尝试解析候选坐标,证明「仓库 + 坐标」这一对能不能真解析。
+//
+// 用法:gradlew -I tools/ci-dep-probe.init.gradle probeCiDeps
+
+def candidates = [
+        ['https://api.modrinth.com/maven', 'maven.modrinth:ae2:19.2.17'],
+        ['https://api.modrinth.com/maven', 'maven.modrinth:slashblade-resharped:2.0.7-1.21.1'],
+        ['https://api.modrinth.com/maven', 'maven.modrinth:guideme:21.1.14'],
+]
+
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+
+    root.tasks.register('probeCiDeps') {
+        group = 'verification'
+        description = '尝试解析 CI 回退坐标,证明仓库+坐标能否解析(不受 libs/ 影响)'
+        // 纯诊断任务:doLast 里要读 Project(仓库/配置),与配置缓存不兼容,显式声明以免误报构建失败。
+        notCompatibleWithConfigurationCache('诊断任务,刻意在 doLast 里读取 Project')
+        doLast {
+            println '===== probeCiDeps ====='
+            candidates.eachWithIndex { entry, i ->
+                def (repoUrl, coord) = [entry[0], entry[1]]
+                def name = "ciProbe${i}"
+                def repoName = "probeRepo${i}"
+                try {
+                    root.repositories.maven { url = repoUrl; name = repoName }
+                    def cfg = root.configurations.create(name)
+                    cfg.canBeResolved = true
+                    cfg.canBeConsumed = false
+                    cfg.transitive = false
+                    root.dependencies.add(name, coord)
+                    def files = cfg.resolve()
+                    println "  [OK]   ${coord}"
+                    files.each { println "           -> ${it.name} (${it.length()} B)" }
+                } catch (Throwable t) {
+                    def msg = t.message == null ? t.toString() : t.message
+                    def first = msg.readLines().take(4).join(' | ')
+                    println "  [FAIL] ${coord}   :: ${first}"
+                }
+            }
+            println '===== 结束(仅诊断,不影响构建结果)====='
+        }
+    }
+}

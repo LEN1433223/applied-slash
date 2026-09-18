@@ -22,6 +22,51 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 public final class AppliedSlashComponents {
     public static final DeferredRegister.DataComponents COMPONENTS =
             DeferredRegister.createDataComponents(Registries.DATA_COMPONENT_TYPE, AppliedSlash.MODID);
+    /**
+     * 莉莉 SE「背包伤害转移」算出的**当前加成值**(Double)。
+     *
+     * <p>特点:①**不持久化**(每刻由 SE 重算,存进 NBT 只是浪费);
+     * ②网络同步(客户端 tooltip / 属性查询要用);
+     * ③只在数值变化时才写,避免每刻刷同步包(见 InventoryDamageTransferLogic#setBonus)。
+     */
+    /**
+     * 莉莉被"动态彩色刀光"改色**之前**的效果颜色码(int)。
+     *
+     * <p>只持久化、不必同步:它只用于服务端还原,客户端不需要。
+     * 有了它,改色就是可逆的(见 LiliRainbowColor#restore)。
+     */
+    /**
+     * 手持「Slash 元件」的**内容**(最多 8 把拔刀剑)。
+     *
+     * <p>便携件的内容必须随物品走(不是世界侧刀库),所以直接存在物品组件里;同步给客户端是必需的
+     * —— AE2 的便携界面在客户端也要能读到内容。
+     */
+    public static final DeferredHolder<DataComponentType<?>, DataComponentType<java.util.List<net.minecraft.world.item.ItemStack>>> PORTABLE_SLASH_CELL_CONTENTS =
+            COMPONENTS.registerComponentType("portable_slash_cell_contents",
+                    builder -> builder
+                            .persistent(net.minecraft.world.item.ItemStack.CODEC.listOf())
+                            .networkSynchronized(net.minecraft.world.item.ItemStack.STREAM_CODEC.apply(net.minecraft.network.codec.ByteBufCodecs.list())));
+
+    /**
+     * 每把被收进元件之刀的**唯一标记**(UUID)。
+     *
+     * <p>为什么必须有它:AE2 的存储键是 {@code AEItemKey},**两把 NBT 完全相同的刀会合并成一个键**
+     * —— 而需求是"同 NBT 也不可堆叠、各占一格"。给每把刀打一个隐藏的唯一标记后,它们的键就各不相同,
+     * AE2 自然按 8 个条目存放(取出时会把标记剥掉,玩家看不到)。
+     *
+     * <p>必须同步:客户端与服务端要用同一个键,否则界面里会对不上。
+     */
+    public static final DeferredHolder<DataComponentType<?>, DataComponentType<java.util.UUID>> PORTABLE_ENTRY_ID =
+            COMPONENTS.registerComponentType("portable_entry_id",
+                    builder -> builder
+                            .persistent(net.minecraft.core.UUIDUtil.CODEC)
+                            .networkSynchronized(net.minecraft.core.UUIDUtil.STREAM_CODEC));
+    public static final DeferredHolder<DataComponentType<?>, DataComponentType<Integer>> LILI_ORIGINAL_COLOR =
+            COMPONENTS.registerComponentType("lili_original_color",
+                    builder -> builder.persistent(Codec.INT));
+    public static final DeferredHolder<DataComponentType<?>, DataComponentType<Double>> LILI_DAMAGE_BONUS =
+            COMPONENTS.registerComponentType("lili_damage_bonus",
+                    builder -> builder.networkSynchronized(ByteBufCodecs.DOUBLE));
 
     /** 指向世界侧刀库存档的标识;首次插入时分配。 */
     public static final DeferredHolder<DataComponentType<?>, DataComponentType<UUID>> VAULT_ID =
@@ -52,7 +97,7 @@ public final class AppliedSlashComponents {
      *   <li>随物品整栈往返({@code AEItemKey.toTag/fromTag})⇒ 「存进元件再取出,能量保留」天然成立;</li>
      *   <li>不参与 {@code stripVolatileState}(那里只删 {@code BLADE_RUNTIME_STATE});</li>
      *   <li><b>会进入 AE2 的存储键</b> ⇒ 每个能量值都是一个新类型 ⇒ 必须有量化兜底
-     *       (见 {@code charged/ChargedBladeEnergy} 与 {@code cell/BladeIdentity} 的两个调用点)。</li>
+     *       (见 {@code charged/BladeEnergy} 与 {@code cell/BladeIdentity} 的两个调用点)。</li>
      * </ul>
      *
      * <p>命名:PLAN §4.1 定的是 {@code applied_slash:blade_energy}(与常量名 BLADE_ENERGY 同源);

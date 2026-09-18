@@ -2,7 +2,7 @@ package com.applied.slash.cell;
 
 import com.applied.slash.AppliedSlash;
 import com.applied.slash.SlashBladeBlades;
-import com.applied.slash.charged.ChargedBladeEnergy;
+import com.applied.slash.charged.BladeEnergy;
 
 import appeng.api.stacks.AEItemKey;
 import appeng.api.stacks.AEKey;
@@ -18,7 +18,8 @@ import net.neoforged.fml.ModList;
  *       {@link AEItemKey#isTagged} 都是零拷贝),保证插入热路径尽量便宜;</li>
  *   <li>规范化:入库前剥离刀的运行时状态组件,让同一把刀在不同运行时态下是同一个键
  *       (否则类型数会虚增、每键载荷变大);</li>
- *   <li><b>规范化还要量化能量</b>(充能刀):能量组件会进入键,不量化则每个能量值一个类型。
+ *   <li><b>规范化还要量化能量</b>(带能量的刀,例如充能器充过的任意拔刀剑):能量组件会进入键,
+ *       不量化则每个能量值一个类型。
  *       注意这里必须<b>成对</b>修改 {@link #mayNormalize} 与 {@link #normalize} —— 见下面的注释。</li>
  * </ol>
  */
@@ -76,7 +77,7 @@ public final class BladeIdentity {
         ItemStack copy = stack.copy();
         SlashBladeBlades.stripVolatileState(copy);
         // 新增调用点:能量 → 档位 + sealed 同步(必须与 mayNormalize 成对存在,见 mayNormalize 的注释)
-        ChargedBladeEnergy.quantizeInPlace(copy);
+        BladeEnergy.quantizeInPlace(copy);
         if (ItemStack.isSameItemSameComponents(copy, stack)) {
             return key;
         }
@@ -87,8 +88,8 @@ public final class BladeIdentity {
      * 该键是否带「未量化的能量」。
      *
      * <p>这是 {@link #mayNormalize} 的能量维度入口,与 {@code SlashBladeBlades.hasVolatileState}
-     * 同构:判定本身引用了充能刀的类({@code instanceof ChargedBladeItem}),
-     * 会触发 {@code ItemSlashBlade} 的类加载 —— 所以必须像
+     * 同构:能量判定要读重锋的刀身状态({@code BladeStateAccess}/{@code ItemSlashBlade} 一侧),
+     * 会触发那些类加载 —— 所以必须像
      * {@code SlashBladeBlades.isSlashBladeItem} 那样,把它放进**被
      * {@code ModList.isLoaded("slashblade")} 包住的独立方法**里,
      * 否则会破坏「SlashBlade 缺席也不 NoClassDefFoundError」这条既有性质。
@@ -100,8 +101,8 @@ public final class BladeIdentity {
         return needsEnergyQuantizingGuarded(key.getReadOnlyStack());
     }
 
-    /** 同上:对充能刀类的引用只在这个被门卫保护的独立方法里发生。 */
+    /** 同上:对重锋类的引用只在这个被门卫保护的独立方法里发生。 */
     private static boolean needsEnergyQuantizingGuarded(ItemStack stack) {
-        return ChargedBladeEnergy.needsQuantizing(stack);
+        return BladeEnergy.needsQuantizing(stack);
     }
 }

@@ -1,0 +1,946 @@
+// ============================================================================
+// 「莉莉」刀鞘贴图生成器:gradlew generateLiliTexture
+// ----------------------------------------------------------------------------
+// 背景(全部实测,见 FACTS-CHARGED-BLADES.md 与 README「莉莉」一节):
+//   莉莉的模型/贴图复用丛雨丸(murasamemaru.obj / .png)。丛雨丸的鞘在贴图里**就是一块纯黑**,
+//   所以游戏里鞘读起来"和刀身一条黑管"。本任务只重绘**鞘**那部分像素,不动几何、不动 UV:
+//     · 鞘用到的像素由 OBJ 的 `sheath` 组面 UV 光栅化得出(不硬编码坐标);
+//     · **必须换算到游戏采样空间** —— 重锋解析 OBJ 时把 v 翻成 1-v
+//       (WavefrontObject#parseTextureCoordinate:fconst_1 + fsub),而 Face.uvOperator 默认恒等,
+//       所以游戏实际采样行 = (1-v)。这里踩过一次:不翻转会上下颠倒。
+//     · 与 `blade`/`blade_damaged`/`blade_fragment` 重叠的 540 px(1.3%)是**保护集**,一个像素都不改;
+//     · 与 `effect`(刀光几何)93%、`item_blade`(图标)65% 共用 —— 这是用户确认接受的取舍。
+//
+// 实测基线(256×512 的 lili.png,游戏采样空间):
+//   主块   x 0..95  y 0..~500   ≈43000 px  鞘主体,当前 (23,22,22)
+//   保护带 主块顶部 y 0..15      540 px    鞘 与 刀身 共用
+//   鞘口段 x 236..243 y 100..106  38 px    鞘口那一侧 301 个面(端面/环面)
+//   鞘长方向:世界 X 与 UV-v 相关系数 0.940 ⇒ 贴图纵向 = 鞘长
+//     X≈-296(鞘尻)→ v 0.151(游戏行 ≈434);X≈-139 → v 0.622(行 ≈193);X>-139 → 鞘口 38 px(行 100..106)
+// ============================================================================
+
+import java.awt.BasicStroke
+import java.awt.Color
+import java.awt.Graphics2D
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import java.util.Locale
+import javax.imageio.ImageIO
+
+/** 一个面的 UV 多边形(已换算到游戏采样空间的像素坐标)与它在世界里的 X 中心。 */
+class SayaFace {
+    final List<double[]> uvPix = []   // [px, py](px/py 是归一化 UV,光栅化时再乘贴图尺寸)
+    final List<double[]> pts3d = []   // 世界坐标下的顶点(用于投影预览)
+    double worldX = 0.0d
+    double uCentroid = 0.0d
+    double vCentroid = 0.0d
+    double uAvg = 0.0d                // 面的平均 u(游戏取色用)
+    double rowAvg = 0.0d              // 面的平均采样行(游戏取色用,= 1 - 平均 v)
+}
+
+/** OBJ 解析结果。 */
+class SayaObj {
+    final Map<String, List<SayaFace>> groups = [:]
+    final List<double[]> verts = []   // [x,y,z]
+}
+
+/**
+ * 鞘贴图重绘器。
+ *
+ * <p>为什么拆成静态方法而不是写在任务体里:Groovy 的 ResolveVisitor 在单个闭包过大时会直接抛
+ * NPE(`source is null`),本仓库已经踩过一次 —— 逻辑一律放脚本级静态方法。
+ */
+class LiliSayaTexture {
+    /** 保护集:这三个组用到的像素绝对不改(它们与鞘共用主块顶部一条)。 */
+    static final List<String> PROTECT_GROUPS = ['blade', 'blade_damaged', 'blade_fragment']
+    /** 鞘口段判定:面 UV 重心的 u > 本值(实测鞘口那 301 个面落在贴图右侧小方块)。 */
+    static final double MOUTH_U = 0.5d
+    /** 世界 X → v 的实测锚点(鞘长方向映射,取自逐段统计)。 */
+    static final double[][] X_TO_V = [[-295.8d, 0.151d], [-243.7d, 0.426d], [-191.6d, 0.622d], [-139.0d, 0.800d]]
+
+    // ------------------------------------------------------------------
+    // 解析
+    // ------------------------------------------------------------------
+
+    /** 读 OBJ:顶点、UV、以及每组的面(同时解析 v 与 vt 索引)。 */
+    static SayaObj read(File objFile) {
+        def obj = new SayaObj()
+        def uvs = []
+        String current = null
+        objFile.readLines('UTF-8').each { line ->
+            if (line.startsWith('#')) {
+                return
+            }
+            if (line.startsWith('g ')) {
+                current = line.substring(2).trim()
+                if (!obj.groups.containsKey(current)) {
+                    obj.groups[current] = []
+                }
+                return
+            }
+            if (line.startsWith('v ')) {
+                def p = line.split(' ')
+                obj.verts << ([p[1] as double, p[2] as double, p[3] as double])
+                return
+            }
+            if (line.startsWith('vt ')) {
+                def p = line.split(' ')
+                uvs << ([p[1] as double, p[2] as double])
+                return
+            }
+            if (!line.startsWith('f ') || current == null) {
+                return
+            }
+            def vi = []
+            def ti = []
+            line.split(' ').drop(1).each { tok ->
+                def bits = tok.split('/')
+                if (bits.length < 1 || !bits[0]) {
+                    return
+                }
+                vi << ((bits[0] as int) - 1)
+                if (bits.length > 1 && bits[1]) {
+                    ti << ((bits[1] as int) - 1)
+                }
+            }
+            if (vi.size() < 3 || ti.size() != vi.size()) {
+                return
+            }
+            def face = new SayaFace()
+            double sx = 0.0d
+            double su = 0.0d
+            double sv = 0.0d
+            for (int i = 0; i < vi.size(); i++) {
+                double u = uvs[ti[i]][0]
+                double v = uvs[ti[i]][1]
+                // 游戏采样空间:行 = (1 - v)
+                face.uvPix << ([u, 1.0d - v] as double[])
+                face.pts3d << obj.verts[vi[i]]
+                sx += obj.verts[vi[i]][0]
+                su += u
+                sv += v
+            }
+            face.worldX = sx / vi.size()
+            face.uCentroid = su / vi.size()
+            face.vCentroid = sv / vi.size()
+            face.uAvg = face.uCentroid
+            face.rowAvg = 1.0d - face.vCentroid
+            obj.groups[current] << face
+        }
+        return obj
+    }
+
+    // ------------------------------------------------------------------
+    // 光栅化
+    // ------------------------------------------------------------------
+
+    /**
+     * 把一组面在**贴图像素网格**上填充成掩码。
+     *
+     * @param scaleW/scaleH 贴图宽高(面的 UV 是归一化的,这里换算成像素坐标)
+     */
+    static boolean[] rasterize(List<SayaFace> faces, int w, int h) {
+        def img = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY)
+        def g = img.createGraphics()
+        g.setColor(Color.BLACK)
+        g.fillRect(0, 0, w, h)
+        g.setColor(Color.WHITE)
+        faces.each { face ->
+            def xs = face.uvPix.collect { (int) Math.round(it[0] * (w - 1)) } as int[]
+            def ys = face.uvPix.collect { (int) Math.round(it[1] * (h - 1)) } as int[]
+            g.fillPolygon(xs, ys, xs.length)
+        }
+        g.dispose()
+        def mask = new boolean[w * h]
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                mask[y * w + x] = (img.getRGB(x, y) & 0xFF) > 128
+            }
+        }
+        return mask
+    }
+
+    static int count(boolean[] mask) {
+        int n = 0
+        for (boolean b : mask) {
+            if (b) {
+                n++
+            }
+        }
+        return n
+    }
+
+    // ------------------------------------------------------------------
+    // 鞘长方向:世界 X ↔ 归一化位置 t(0 = 鞘尻,t = 1 = 主段靠近鞘口的一端)
+    // ------------------------------------------------------------------
+
+    /** 由实测锚点把 v(贴图纵坐标)线性插值成"沿鞘长的归一化位置"。 */
+    static double tOfV(double v) {
+        def a = X_TO_V
+        if (v <= a[0][1]) {
+            return 0.0d
+        }
+        if (v >= a[a.length - 1][1]) {
+            return 1.0d
+        }
+        for (int i = 0; i < a.length - 1; i++) {
+            double v0 = a[i][1]
+            double v1 = a[i + 1][1]
+            if (v >= v0 && v <= v1) {
+                double k = (v - v0) / Math.max(1.0e-9d, v1 - v0)
+                double x0 = a[i][0]
+                double x1 = a[i + 1][0]
+                double x = x0 + (x1 - x0) * k
+                double xKoji = a[0][0]
+                double xMouth = a[a.length - 1][0]
+                return (x - xKoji) / Math.max(1.0e-9d, xMouth - xKoji)
+            }
+        }
+        return 1.0d
+    }
+
+    // ------------------------------------------------------------------
+    // 预览
+    // ------------------------------------------------------------------
+
+    /** 掩码叠加图:原图打底,鞘专用像素染成品红、保护像素染成青色。 */
+    static void writeMaskOverlay(File out, BufferedImage src, boolean[] paint, boolean[] protect, int w, int h, int zoom) {
+        def img = new BufferedImage(w * zoom, h * zoom, BufferedImage.TYPE_INT_RGB)
+        def g = img.createGraphics()
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR)
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int i = y * w + x
+                def c = new Color(src.getRGB(x, y), true)
+                int r = c.red
+                int gg = c.green
+                int b = c.blue
+                if (protect[i]) {
+                    r = 40; gg = 200; b = 220
+                } else if (paint[i]) {
+                    r = 220; gg = 40; b = 160
+                }
+                if (r + gg + b < 60) {
+                    r += 30; gg += 30; b += 30
+                }
+                g.setColor(new Color(Math.min(255, r), Math.min(255, gg), Math.min(255, b)))
+                g.fillRect(x * zoom, y * zoom, zoom, zoom)
+            }
+        }
+        g.dispose()
+        out.parentFile.mkdirs()
+        ImageIO.write(img, 'png', out)
+    }
+
+    /** 局部放大:裁一块区域再最近邻放大(整张 256×512 放大 4 倍在屏幕上太大)。 */
+    static void writeCrop(File out, BufferedImage src, int x0, int y0, int cw, int ch, int zoom) {
+        def img = new BufferedImage(cw * zoom, ch * zoom, BufferedImage.TYPE_INT_RGB)
+        def g = img.createGraphics()
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR)
+        g.drawImage(src.getSubimage(x0, y0, cw, ch), 0, 0, cw * zoom, ch * zoom, null)
+        g.dispose()
+        out.parentFile.mkdirs()
+        ImageIO.write(img, 'png', out)
+    }
+
+    /** 把若干张同尺寸的图横向拼起来(左右并排对比)。 */
+    static void writeSideBySide(File out, List<BufferedImage> panels) {
+        if (panels.isEmpty()) {
+            return
+        }
+        int gap = 6
+        int w = panels[0].getWidth()
+        int h = panels[0].getHeight()
+        def img = new BufferedImage(panels.size() * w + (panels.size() - 1) * gap, h, BufferedImage.TYPE_INT_RGB)
+        def g = img.createGraphics()
+        g.setColor(new Color(22, 22, 28))
+        g.fillRect(0, 0, img.getWidth(), img.getHeight())
+        panels.eachWithIndex { p, i -> g.drawImage(p, i * (w + gap), 0, null) }
+        g.dispose()
+        out.parentFile.mkdirs()
+        ImageIO.write(img, 'png', out)
+    }
+}
+
+/**
+ * 游戏尺度投影预览。
+ *
+ * <p>**为什么要它**:鞘在模型里只有 31 单位宽,而 1 格 = 320 单位(`renderModel` 的 `scale(0.003125)`)
+ * ⇒ 一根鞘相当于 0.097 格。屏幕上它到底几像素,完全取决于"一格占多少屏幕像素":
+ * <ul>
+ *   <li>**背包/图标尺度**(一格 ≈ 16 px,与物品栏格子一致)⇒ 鞘约 **1.5 px** —— 这时只能靠"颜色对比"认出来;</li>
+ *   <li>**刀架/背刀尺度**(一格 ≈ 80 px,玩家贴近看刀架时)⇒ 鞘约 **7.8 px** —— 这时形体也看得见。</li>
+ * </ul>
+ * 所以本类按给定 px/单位把 `blade` 与 `blade + sheath` 各画一张,再最近邻放大,并排输出。
+ */
+class SayaProjection {
+    /** 取色的规则与游戏一致:面的平均 UV,采样行 = 1 - v(重锋解析 OBJ 时翻过一次 v)。 */
+    static BufferedImage render(SayaObj obj, List<String> groups, BufferedImage tex,
+                                double pxPerUnit, int zoom, int accentHeightUnits) {
+        def faces = []
+        groups.each { g ->
+            (obj.groups[g] ?: []).each { face -> faces << face }
+        }
+        int cw = (int) Math.ceil(360.0d * pxPerUnit) + 8
+        int ch = (int) Math.ceil(accentHeightUnits * pxPerUnit) + 8
+        def small = new BufferedImage(cw, ch, BufferedImage.TYPE_INT_RGB)
+        def g2 = small.createGraphics()
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF)
+        g2.setColor(new Color(120, 141, 88))                 // 草地背景:模拟游戏取景
+        g2.fillRect(0, 0, cw, ch)
+        faces.sort { a, b -> depth(a) <=> depth(b) }
+        double ox = cw - 4.0d
+        double oy = ch * 0.55d
+        faces.each { face ->
+            double shade = shadeOf(face)
+            int argb = sample(tex, face)
+            def c = new Color(argb, true)
+            int r = (int) Math.min(255.0d, c.red * shade)
+            int gg = (int) Math.min(255.0d, c.green * shade)
+            int b = (int) Math.min(255.0d, c.blue * shade)
+            g2.setColor(new Color(r, gg, b))
+            def xs = face.pts3d.collect { (int) Math.floor(ox + ((it[0] as double) - 41.7d) * pxPerUnit) } as int[]
+            def ys = face.pts3d.collect { (int) Math.floor(oy - (it[1] as double) * pxPerUnit) } as int[]
+            g2.fillPolygon(xs, ys, xs.length)
+        }
+        g2.dispose()
+
+        def big = new BufferedImage(cw * zoom, ch * zoom, BufferedImage.TYPE_INT_RGB)
+        def g3 = big.createGraphics()
+        g3.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR)
+        g3.drawImage(small, 0, 0, cw * zoom, ch * zoom, null)
+        g3.dispose()
+        return big
+    }
+
+    private static double depth(SayaFace face) {
+        double d = 0.0d
+        face.pts3d.each { d += (it[2] as double) }
+        return face.pts3d.isEmpty() ? 0.0d : d / face.pts3d.size()
+    }
+
+    private static double shadeOf(SayaFace face) {
+        if (face.pts3d.size() < 3) {
+            return 0.75d
+        }
+        def p0 = face.pts3d[0]
+        def p1 = face.pts3d[1]
+        def p2 = face.pts3d[2]
+        double ux = (p1[0] as double) - (p0[0] as double)
+        double uy = (p1[1] as double) - (p0[1] as double)
+        double uz = (p1[2] as double) - (p0[2] as double)
+        double vx = (p2[0] as double) - (p0[0] as double)
+        double vy = (p2[1] as double) - (p0[1] as double)
+        double vz = (p2[2] as double) - (p0[2] as double)
+        double nx = uy * vz - uz * vy
+        double ny = uz * vx - ux * vz
+        double nz = ux * vy - uy * vx
+        double len = Math.sqrt(nx * nx + ny * ny + nz * nz)
+        if (len < 1.0e-9d) {
+            return 0.75d
+        }
+        double k = Math.abs(ny / len) * 0.6d + Math.abs(nz / len) * 0.4d
+        return 0.55d + 0.45d * Math.min(1.0d, k)
+    }
+
+    private static int sample(BufferedImage tex, SayaFace face) {
+        if (tex == null) {
+            return 0xFFC8C8D2
+        }
+        int px = (int) Math.max(0, Math.min(tex.getWidth() - 1, Math.round(face.uAvg * (tex.getWidth() - 1))))
+        int py = (int) Math.max(0, Math.min(tex.getHeight() - 1, Math.round(face.rowAvg * (tex.getHeight() - 1))))
+        return tex.getRGB(px, py)
+    }
+}
+
+/**
+ * 整数倍最近邻放大,手写循环实现。
+ *
+ * <p><b>为什么不用 Graphics2D.drawImage</b>:即使设了 {@code KEY_INTERPOLATION=NEAREST_NEIGHBOR},
+ * Java2D 在带 alpha 的缩放路径上仍可能走"预乘 + 平滑"的逻辑 —— 实测产物与
+ * {@code src.getRGB(x/k, y/k)} 对不上(几十万像素差 1~249),于是"掩码外逐字节不变"这条断言
+ * 会误报。自己按块复制是确定的:每个源像素变成 k×k 的一块,颜色一模一样。
+ */
+class NearestScale {
+    static BufferedImage up(BufferedImage src, int k) {
+        if (k <= 1) {
+            return src
+        }
+        int w = src.getWidth()
+        int h = src.getHeight()
+        def out = new BufferedImage(w * k, h * k, BufferedImage.TYPE_INT_ARGB)
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int argb = src.getRGB(x, y)
+                for (int dy = 0; dy < k; dy++) {
+                    for (int dx = 0; dx < k; dx++) {
+                        out.setRGB(x * k + dx, y * k + dy, argb)
+                    }
+                }
+            }
+        }
+        return out
+    }
+}
+
+/**
+ * AI 纹样导入器。
+ *
+ * <p>把 AI 出的"鞘纹样"变成能贴进模型的样子:裁掉水印/多余边 → 缩放到鞘的 UV 区域尺寸 →
+ * **横向循环交叉淡化**把首尾接缝缝起来(绕鞘一周必须无缝,否则鞘上会有一条竖缝)。
+ */
+class SayaArt {
+    /**
+     * 把 AI 纹样铺满鞘的 UV 区域。**三个必须同时成立的性质**:
+     *
+     * <ol>
+     *   <li><b>各向同性(圆花仍是圆)</b>:源图按"区域半宽"做**统一缩放**,不拉伸。
+     *       判据是"区域映射到表面后水平/垂直的 px 每单位相等" ——
+     *       实测鞘周长 ≈ 31.7 单位、鞘长 260.8 单位,区域 256×2048 ⇒ 8.07 vs 7.85 ✓。
+     *       反例:把 1:5.33 的源图直接塞进 1:8 的区域,花会被纵向拉长 1.5 倍。</li>
+     *   <li><b>横向无缝(绕鞘一周没有竖缝)</b>:源图左右边缘不连续(实测色差 34.6),
+     *       所以把缩放后的图**水平镜像**拼成整宽 —— 拼接处内容天然相等 ⇒ 色差 ≈ 0。
+     *       镜像要求统一下来的图只有半宽,这正是"按半宽缩放"的原因。</li>
+     *   <li><b>全覆盖(不留纯白底)</b>:源图约 38% 是白底。纵向按**镜像平铺**填满高度,
+     *       再叠 `layers` 层、每层纵向错开一段,逐通道取 min(darken)⇒
+     *       某一层的白底会被另一层的花瓣盖住,覆盖率从 ~62% 提到 90% 以上。</li>
+     * </ol>
+     *
+     * @param trimBottom 底部裁掉/镜像替换多少像素(去水印)
+     * @param mirrorPad  true = 用上方内容的镜像替换底部(不损失长度);false = 直接裁掉
+     * @param layers     叠层数(1 = 不叠,保留白底)
+     */
+    static BufferedImage prepare(File file, int targetW, int targetH, int trimBottom, boolean mirrorPad,
+                                int layers, boolean minPool) {
+        def raw = ImageIO.read(file)
+        if (raw == null) {
+            throw new IllegalStateException("AI 纹样读取失败: ${file}")
+        }
+        def cleaned = cleanBottom(raw, trimBottom, mirrorPad)
+        // Groovy 的 `/` 返回 BigDecimal,直接喂 Math.max 会触发"方法重载歧义",这里显式取整
+        int half = Math.max(2, (int) (targetW / 2))
+        double s = half / (double) cleaned.getWidth()          // 统一缩放系数(各向同性)
+        int scaledH = Math.max(2, (int) Math.round(cleaned.getHeight() * s))
+        def halfImg = new BufferedImage(half, scaledH, BufferedImage.TYPE_INT_RGB)
+        if (minPool) {
+            // 线稿专用降采样:目标像素取"源足迹里最暗的那个像素"(逐通道 min)。
+            // 为什么必须这样:细线稿(墨线只占 0.37%)缩到 ~90 px 宽后,双三次会把 1 px 的线**平均成灰雾**,
+            // 贴到鞘上等于没有花纹;取 min 能把线保住(线宽变成约 1 个目标像素)。
+            for (int y = 0; y < scaledH; y++) {
+                int y0 = (int) Math.floor(y * cleaned.getHeight() / (double) scaledH)
+                int y1 = (int) Math.ceil((y + 1) * cleaned.getHeight() / (double) scaledH)
+                for (int x = 0; x < half; x++) {
+                    int x0 = (int) Math.floor(x * cleaned.getWidth() / (double) half)
+                    int x1 = (int) Math.ceil((x + 1) * cleaned.getWidth() / (double) half)
+                    int r = 255
+                    int gg = 255
+                    int bb = 255
+                    for (int sy = Math.max(0, y0); sy < Math.max(y0 + 1, Math.min(y1, cleaned.getHeight())); sy++) {
+                        for (int sx = Math.max(0, x0); sx < Math.max(x0 + 1, Math.min(x1, cleaned.getWidth())); sx++) {
+                            def c = new Color(cleaned.getRGB(sx, sy), true)
+                            r = Math.min(r, c.red)
+                            gg = Math.min(gg, c.green)
+                            bb = Math.min(bb, c.blue)
+                        }
+                    }
+                    halfImg.setRGB(x, y, new Color(r, gg, bb).getRGB())
+                }
+            }
+        } else {
+            def g = halfImg.createGraphics()
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            g.drawImage(cleaned, 0, 0, half, scaledH, null)
+            g.dispose()
+        }
+
+        int period = scaledH * 2
+        int layerCount = Math.max(1, layers)
+        def out = new BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_RGB)
+        for (int y = 0; y < targetH; y++) {
+            for (int x = 0; x < targetW; x++) {
+                int hx = x < half ? x : (targetW - 1 - x)      // 水平镜像
+                int r = 255
+                int gg = 255
+                int b = 255
+                for (int k = 0; k < layerCount; k++) {
+                    int yy = y + (int) (k * (targetH / (double) layerCount))
+                    int p = ((yy % period) + period) % period
+                    int hy = p < scaledH ? p : (period - 1 - p)  // 纵向镜像平铺
+                    def c = new Color(halfImg.getRGB(Math.max(0, Math.min(half - 1, hx)),
+                            Math.max(0, Math.min(scaledH - 1, hy))), true)
+                    r = Math.min(r, c.red)                       // darken:白底被别层的花瓣盖掉
+                    gg = Math.min(gg, c.green)
+                    b = Math.min(b, c.blue)
+                }
+                out.setRGB(x, y, new Color(r, gg, b).getRGB())
+            }
+        }
+        return out
+    }
+
+    /** 底部清洗:mirrorPad = 用上方内容的镜像替换(不损失长度),否则直接裁掉。 */
+    static BufferedImage cleanBottom(BufferedImage raw, int trimBottom, boolean mirrorPad) {
+        int W = raw.getWidth()
+        int H = raw.getHeight()
+        if (trimBottom <= 0 || trimBottom >= H) {
+            return raw
+        }
+        if (!mirrorPad) {
+            return raw.getSubimage(0, 0, W, H - trimBottom)
+        }
+        def out = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB)
+        for (int y = 0; y < H; y++) {
+            int src = y
+            if (y >= H - trimBottom) {
+                src = Math.max(0, H - trimBottom - 1 - (y - (H - trimBottom)))
+            }
+            for (int x = 0; x < W; x++) {
+                out.setRGB(x, y, raw.getRGB(x, src))
+            }
+        }
+        return out
+    }
+
+    /** 区域里"非底色"像素占比(底色 = 区域主色,容差 ±14)。用来断言"全覆盖"。 */
+    static double inkShare(BufferedImage img) {
+        def counter = [:]
+        for (int y = 0; y < img.getHeight(); y += 2) {
+            for (int x = 0; x < img.getWidth(); x += 2) {
+                def c = new Color(img.getRGB(x, y), true)
+                def key = "${(int) (c.red / 16)},${(int) (c.green / 16)},${(int) (c.blue / 16)}"
+                counter[key] = (counter[key] ?: 0) + 1
+            }
+        }
+        def top = counter.entrySet().max { a, b -> (a.value as int) <=> (b.value as int) }
+        def parts = top.key.toString().split(',')
+        int br = (parts[0] as int) * 16
+        int bg = (parts[1] as int) * 16
+        int bb = (parts[2] as int) * 16
+        int ink = 0
+        int total = 0
+        for (int y = 0; y < img.getHeight(); y += 2) {
+            for (int x = 0; x < img.getWidth(); x += 2) {
+                def c = new Color(img.getRGB(x, y), true)
+                total++
+                if (Math.abs(c.red - br) > 14 || Math.abs(c.green - bg) > 14 || Math.abs(c.blue - bb) > 14) {
+                    ink++
+                }
+            }
+        }
+        return total == 0 ? 0.0d : ink / (double) total
+    }
+
+    /**
+     * 横向循环交叉淡化:末尾 `band` 列与"同一行上往回数一个周期的那些列"做加权混合。
+     *
+     * <p>为什么这样缝:贴图横向要首尾相接(绕鞘一周),而 AI 图左右边缘的图案往往不连续
+     * (实测首列↔末列色差 33.9,正常相邻列只有 1.7)。把末段逐渐替换成另一侧的内容,
+     * 接缝处两侧的颜色就连续了 —— 代价只是那一小段图案被混合,在 180 px 宽的最终贴图上肉眼不可见。
+     */
+    static void seamlessHorizontal(BufferedImage img, int band) {
+        int w = img.getWidth()
+        int h = img.getHeight()
+        def snapshot = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
+        def g = snapshot.createGraphics()
+        g.drawImage(img, 0, 0, null)
+        g.dispose()
+        for (int y = 0; y < h; y++) {
+            for (int k = 0; k < band; k++) {
+                int x = w - band + k
+                double t = (k + 1) / (double) (band + 1)      // 0 → 1 渐变
+                def a = new Color(snapshot.getRGB(x, y), true)
+                def b = new Color(snapshot.getRGB(k, y), true) // 与首段同相位的内容
+                int r = (int) Math.round(a.red * (1 - t) + b.red * t)
+                int gg = (int) Math.round(a.green * (1 - t) + b.green * t)
+                int bb = (int) Math.round(a.blue * (1 - t) + b.blue * t)
+                img.setRGB(x, y, new Color(r, gg, bb).getRGB())
+            }
+        }
+    }
+
+    /** 横向接缝色差(首列↔末列的平均色差),用于导入前后的对照打印。 */
+    static double seamError(BufferedImage img) {
+        int w = img.getWidth()
+        int h = img.getHeight()
+        double sum = 0.0d
+        for (int y = 0; y < h; y++) {
+            def a = new Color(img.getRGB(0, y), true)
+            def b = new Color(img.getRGB(w - 1, y), true)
+            sum += (Math.abs(a.red - b.red) + Math.abs(a.green - b.green) + Math.abs(a.blue - b.blue)) / 3.0d
+        }
+        return sum / h
+    }
+
+    /** 从鞘的面 UV 反推"鞘在贴图里占的像素矩形" [x0, y0, x1, y1]。 */
+    static int[] regionOf(List<SayaFace> faces, int w, int h) {
+        double uMin = Double.MAX_VALUE
+        double uMax = -Double.MAX_VALUE
+        double rMin = Double.MAX_VALUE
+        double rMax = -Double.MAX_VALUE
+        faces.each { face ->
+            face.uvPix.each { uv ->
+                uMin = Math.min(uMin, uv[0] as double)
+                uMax = Math.max(uMax, uv[0] as double)
+                rMin = Math.min(rMin, uv[1] as double)
+                rMax = Math.max(rMax, uv[1] as double)
+            }
+        }
+        return [(int) Math.round(uMin * (w - 1)), (int) Math.round(rMin * (h - 1)),
+                (int) Math.round(uMax * (w - 1)), (int) Math.round(rMax * (h - 1))] as int[]
+    }
+}
+
+/** 图集布局常量(与 tools/lili-mesh.gradle 的 `LiliAtlas` 同一套;两处互相指认)。 */
+class LiliAtlasLayout {
+    /** 底图 = 原始素材 **2× 最近邻放大**(256×512 → 512×1024),UV 一个都不动。 */
+    static final int TEX_W = 512
+    static final int TEX_H = 1024
+    static final int ORIG_SCALE = 2
+    static final int ORIG_X = 0
+    static final int ORIG_Y = 0
+    /** 鞘的区域由**几何反推**(见 SayaArt.regionOf),这里只做兜底校验用。 */
+    static final int SAYA_W = 256
+    static final int SAYA_H = 2048
+}
+
+/**
+ * 把丛雨丸原始素材按**整数倍最近邻放大**作为底图(回退版:不做图集重排)。
+ *
+ * <p>为什么不重排:重排需要给其它 7 组做 UV 仿射变换,而那一步实测会把某些组采到
+ * "空白像素"⇒ 游戏里整块变透明/变黑(用户截图)。回退版**完全不动 UV**,
+ * 只把素材 2× 放大,刀身/柄/图标的采样点与原版逐一对应。
+ * 手写最近邻(而不是 Graphics2D.drawImage):Java2D 的缩放会做预乘 alpha 平滑,
+ * 与源图对不上,会破坏"掩码外逐像素不变"这条断言。
+ */
+class AtlasBase {
+    static BufferedImage build(BufferedImage original) {
+        return NearestScale.up(original, LiliAtlasLayout.ORIG_SCALE)
+    }
+}
+
+/**
+ * 上色器:只改 `paint` 掩码内的像素,其余像素从源图**整值复制**(逐字节不变)。
+ *
+ * <p>两种底材:
+ * <ul>
+ *   <li>`art == null`:程序画象牙白渐变(默认);</li>
+ *   <li>`art != null`:把 AI 生成的鞘纹样按 **u = 绕鞘一周 / 行 = 鞘长** 映射铺进鞘的 UV 区域
+ *       (见 {@link SayaArt}),金箍仍然由程序画在最上层 ⇒ AI 图里不必画金具。</li>
+ * </ul>
+ *
+ * @param mouthMask 鞘口段(整段刷金;裁剪后通常为空)
+ * @param bandLo/bandHi 两道金箍的沿鞘长阈值(由调用方从"实际被画到的区间"推出来)
+ * @param art AI 纹样(已按区域尺寸缩放并缝合接缝),null = 用程序渐变
+ * @param region 鞘的 UV 像素区域 [x0, y0, x1, y1](art 铺满它)
+ */
+class SayaTint {
+    static BufferedImage apply(BufferedImage src, boolean[] paint, boolean[] mouthMask,
+                               Color base, Color edge, Color trim,
+                               double bandLo, double bandHi, Color outline,
+                               BufferedImage art, int[] region) {
+        int w = src.getWidth()
+        int h = src.getHeight()
+        def out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+        for (int y = 0; y < h; y++) {
+            double v = 1.0d - (y / (double) (h - 1))          // 游戏采样空间:行 = 1 - v
+            double t = LiliSayaTexture.tOfV(v)                // 0 = 鞘尻, 1 = 鞘口(仅用于渐变)
+            double row = y / (double) (h - 1)
+            for (int x = 0; x < w; x++) {
+                int i = y * w + x
+                int argb = src.getRGB(x, y)
+                if (!paint[i]) {
+                    out.setRGB(x, y, argb)                    // 掩码外:原值复制
+                    continue
+                }
+                def c
+                if (trim != null && (mouthMask[i] || row <= bandLo || row >= bandHi)) {
+                    c = trim
+                } else if (art != null) {
+                    c = sampleArt(art, region, x, y)
+                } else {
+                    double k = 0.18d * (1.0d - t)             // 鞘口侧最亮,向鞘尻渐暗
+                    c = blend(base, edge, k)
+                }
+                def orig = new Color(argb, true)
+                double origLum = 0.299d * orig.red + 0.587d * orig.green + 0.114d * orig.blue
+                double shade = art != null ? 1.0d : (0.97d + 0.06d * (origLum / 255.0d))
+                int r = (int) Math.max(0, Math.min(255, Math.round(c.red * shade)))
+                int g = (int) Math.max(0, Math.min(255, Math.round(c.green * shade)))
+                int b = (int) Math.max(0, Math.min(255, Math.round(c.blue * shade)))
+                out.setRGB(x, y, new Color(r, g, b, 255).getRGB())
+            }
+        }
+        if (outline != null) {
+            drawOutline(out, paint, outline)
+        }
+        return out
+    }
+
+    /** 把像素 (x,y) 映射到 AI 纹样上的采样点:横向 = 绕鞘一周,纵向 = 鞘长。 */
+    private static Color sampleArt(BufferedImage art, int[] region, int x, int y) {
+        int x0 = region[0]
+        int y0 = region[1]
+        int x1 = Math.max(x0 + 1, region[2])
+        int y1 = Math.max(y0 + 1, region[3])
+        double u = (x - x0) / (double) (x1 - x0)
+        double v = (y - y0) / (double) (y1 - y0)
+        int ax = (int) Math.max(0, Math.min(art.getWidth() - 1, Math.round(u * (art.getWidth() - 1))))
+        int ay = (int) Math.max(0, Math.min(art.getHeight() - 1, Math.round(v * (art.getHeight() - 1))))
+        return new Color(art.getRGB(ax, ay), true)
+    }
+
+    /** 可选轮廓:掩码边界 1 px 刷深色(让象牙白鞘在近白的刀尖旁边也能切开)。 */
+    private static void drawOutline(BufferedImage img, boolean[] paint, Color outline) {
+        int w = img.getWidth()
+        int h = img.getHeight()
+        def edge = []
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int i = y * w + x
+                if (!paint[i]) {
+                    continue
+                }
+                boolean border = false
+                if (x == 0 || x == w - 1 || y == 0 || y == h - 1) {
+                    border = true
+                } else if (!paint[i - 1] || !paint[i + 1] || !paint[i - w] || !paint[i + w]) {
+                    border = true
+                }
+                if (border) {
+                    edge << ([x, y])
+                }
+            }
+        }
+        edge.each { p -> img.setRGB((int) p[0], (int) p[1], outline.getRGB()) }
+    }
+
+    private static Color blend(Color a, Color b, double k) {
+        double t = Math.max(0.0d, Math.min(1.0d, k))
+        return new Color(
+                (int) Math.round(a.red + (b.red - a.red) * t),
+                (int) Math.round(a.green + (b.green - a.green) * t),
+                (int) Math.round(a.blue + (b.blue - a.blue) * t))
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Gradle 任务
+// ----------------------------------------------------------------------------
+
+// 路径在**配置期**取好:doLast 里访问 project 会让配置缓存无法保存(本仓库既有约定)
+def liliAssetDir = new File(project.projectDir, 'src/main/resources/assets/applied_slash/models/lili')
+def liliObjFile = new File(liliAssetDir, 'lili.obj')
+def liliTargetPng = new File(liliAssetDir, 'lili.png')
+def liliSourcePng = new File(project.projectDir, 'art/lili_source.png')
+def liliSourceObj = new File(project.projectDir, 'art/lili_source.obj')
+def liliPreviewDir = new File(project.projectDir, 'build/lili-texture-preview')
+
+/** 颜色参数:`-PsayaBase=ECE2E7` 之类;默认 = 象牙白底 + 亮金箍(用户选定)。 */
+static Color pickColour(Object v, String fallback) {
+    String s = v == null ? fallback : v.toString().replace('#', '').trim()
+    if (s.isEmpty()) {
+        return null
+    }
+    return new Color(Integer.parseInt(s, 16))
+}
+
+// 参数在**配置期**读好(与路径同理:doLast 里访问 project 会让配置缓存报 8 处问题)
+def sayaBaseProp = project.findProperty('sayaBase')
+def sayaEdgeProp = project.findProperty('sayaEdge')
+def sayaTrimProp = project.findProperty('sayaTrim')
+def sayaOutlineProp = project.findProperty('sayaOutline')
+def sayaGradientProp = project.findProperty('sayaGradient')
+def sayaKojiFracProp = project.findProperty('sayaKojiFrac')
+def sayaMouthFracProp = project.findProperty('sayaMouthFrac')
+def sayaRestoreProp = project.hasProperty('sayaRestore')
+/** 整张贴图的整数放大倍数(2 ⇒ 512×1024,鞘的可用像素 ×4)。 */
+def sayaScaleProp = project.findProperty('sayaScale')
+/** AI 鞘纹样:显式指定 `-PsayaArt=...`,或默认读取 art/saya_ai.png(存在就用)。 */
+def sayaArtProp = project.findProperty('sayaArt')
+def sayaArtFile = new File(project.projectDir, sayaArtProp != null ? sayaArtProp.toString() : 'art/saya_ai.png')
+def cropBottomProp = (project.findProperty('sayaArtCropBottom') ?: '0') as int
+/** 底部去水印方式:默认镜像替换(不损失长度);-PsayaArtHardCrop 改成直接裁掉。 */
+def mirrorPadProp = !project.hasProperty('sayaArtHardCrop')
+/** 金箍:回退版默认打开(用户最后确认过的观感);-PsayaTrimOff 关闭。 */
+def trimOffProp = project.hasProperty('sayaTrimOff')
+/** 线稿专用降采样(逐通道 min 保住细线);-PsayaArtMinPool 打开。 */
+def minPoolProp = project.hasProperty('sayaArtMinPool')
+/** 叠层数(回退版默认 1 = 不叠,保留原始花纹的疏密)。 */
+def layersProp = ((project.findProperty('sayaArtLayers') ?: '1') as int)
+
+tasks.register('generateLiliTexture') {
+    group = 'applied slash tooling'
+    description = '只重绘莉莉刀鞘的贴图像素(象牙白 + 金箍);不动几何/UV,掩码外像素逐字节不变'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读 OBJ/PNG 并写资源文件')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+
+        if (sayaRestoreProp) {
+            liliTargetPng.bytes = liliSourcePng.bytes
+            println "===== generateLiliTexture ====="
+            println "  已从 ${liliSourcePng} 还原 ${liliTargetPng}(原始丛雨丸像素)"
+            return
+        }
+
+        if (!liliSourcePng.isFile()) {
+            throw new GradleException("缺少原始贴图存档 ${liliSourcePng}(它必须存在,否则无法回滚/重绘)")
+        }
+
+        def base = pickColour(sayaBaseProp, 'F4EEEA')
+        def edge = pickColour(sayaEdgeProp, 'E2D8D4')
+        def trim = pickColour(sayaTrimProp, 'F7C948')
+        def outline = pickColour(sayaOutlineProp, '')
+        double gradient = (sayaGradientProp ?: '0.18') as double
+        double kojiFrac = (sayaKojiFracProp ?: '0.08') as double
+        double mouthFrac = (sayaMouthFracProp ?: '0.05') as double
+
+        def raw0 = ImageIO.read(liliSourcePng)
+        // 图集重排:原始素材 2× 最近邻放大后放进右上象限(1024×2048)。
+        // 其它 7 组的 UV 在几何侧已做同一套仿射变换(u' = 0.5u + 0.5, v' = 0.5v)⇒ 外观一个像素都不变。
+        def src = AtlasBase.build(raw0)
+        int w = src.getWidth()
+        int h = src.getHeight()
+        def obj = LiliSayaTexture.read(liliObjFile)
+
+        def sheathFaces = obj.groups['sheath'] ?: []
+        def protectFaces = []
+        LiliSayaTexture.PROTECT_GROUPS.each { g ->
+            def list = obj.groups[g]
+            if (list != null) {
+                protectFaces.addAll(list)
+            }
+        }
+        def mouthFaces = []
+        sheathFaces.each { f ->
+            if (f.uCentroid > LiliSayaTexture.MOUTH_U) {
+                mouthFaces << f
+            }
+        }
+
+        boolean[] sheathMask = LiliSayaTexture.rasterize(sheathFaces, w, h)
+        boolean[] protectMask = LiliSayaTexture.rasterize(protectFaces, w, h)
+        boolean[] mouthMask = LiliSayaTexture.rasterize(mouthFaces, w, h)
+        boolean[] paint = new boolean[w * h]
+        int paintCount = 0
+        int protectedCount = 0
+        double tMin = 1.0d
+        double tMax = 0.0d
+        int rowMin = h
+        int rowMax = 0
+        for (int y = 0; y < h; y++) {
+            double t = LiliSayaTexture.tOfV(1.0d - (y / (double) (h - 1)))
+            for (int x = 0; x < w; x++) {
+                int i = y * w + x
+                if (sheathMask[i] && !protectMask[i]) {
+                    paint[i] = true
+                    paintCount++
+                    tMin = Math.min(tMin, t)
+                    tMax = Math.max(tMax, t)
+                    rowMin = Math.min(rowMin, y)
+                    rowMax = Math.max(rowMax, y)
+                } else if (sheathMask[i]) {
+                    protectedCount++
+                }
+            }
+        }
+        // 金箍位置**从实际被画到的 t 区间反推** —— 网格裁剪后(鞘上的金属环/栗形/下绪被删),
+        // 旧的"固定比例"会落在没人采样的行上,变成看不见的像素;
+        // 只有落在 [tMin, tMax] 里的箍才会被真正留下的面取到。
+        // 金箍阈值**按采样行(鞘长)直接算**:低行 = 鞘尻(尖端),高行 = 鞘口。
+        // 不要用 t:row↔t 的映射在两端被钳制且非线性,写"8%"会占掉 20%~30% 的鞘长(实测)。
+        double bandLo = (rowMin + kojiFrac * (rowMax - rowMin)) / (double) (h - 1)
+        double bandHi = (rowMax - mouthFrac * (rowMax - rowMin)) / (double) (h - 1)
+
+        // ---- 可选:导入 AI 鞘纹样(默认 gundam:art/saya_ai.png 存在就用)----
+        // 映射关系由实测决定:横向 = 绕鞘一周(u)、纵向 = 鞘长(采样行),纹样铺满该矩形。
+        int[] region = SayaArt.regionOf(sheathFaces, w, h)
+        BufferedImage art = null
+        double artSeamBefore = 0.0d
+        double artSeamAfter = 0.0d
+        double artInk = 0.0d
+        if (sayaArtFile.isFile()) {
+            def rawArt = ImageIO.read(sayaArtFile)
+            artSeamBefore = SayaArt.seamError(rawArt)
+            int rw = Math.max(2, region[2] - region[0] + 1)
+            int rh = Math.max(2, region[3] - region[1] + 1)
+            art = SayaArt.prepare(sayaArtFile, rw, rh, cropBottomProp as int, mirrorPadProp, layersProp, minPoolProp)
+            artSeamAfter = SayaArt.seamError(art)
+            artInk = SayaArt.inkShare(art)
+        } else if (sayaArtProp != null) {
+            println "  [注意] 指定的 AI 纹样不存在: ${sayaArtFile}(本次用程序渐变)"
+        }
+
+        // 金箍:回退版**默认打开**(与用户最后确认过的观感一致);-PsayaTrimOff 可关闭
+        Color trimColour = trimOffProp ? null : trim
+        def out = SayaTint.apply(src, paint, mouthMask, base, edge, trimColour, bandLo, bandHi, outline, art, region)
+        ImageIO.write(out, 'png', liliTargetPng)
+
+        // ---- 预览 ----
+        LiliSayaTexture.writeMaskOverlay(new File(liliPreviewDir, 'mask-overlay-2x.png'), src, paint, protectMask, w, h, 2)
+        LiliSayaTexture.writeCrop(new File(liliPreviewDir, 'retinted-main-2x.png'), out, 0, 0, 128, h, 2)
+        LiliSayaTexture.writeCrop(new File(liliPreviewDir, 'retinted-mouth-8x.png'), out, 216, 80, 40, 48, 8)
+        LiliSayaTexture.writeSideBySide(new File(liliPreviewDir, 'scale-icon-16px-per-block.png'), [
+                SayaProjection.render(obj, ['blade', 'blade_damaged'], src, 0.05d, 10, 120),
+                SayaProjection.render(obj, ['blade', 'blade_damaged', 'sheath'], out, 0.05d, 10, 120)])
+        LiliSayaTexture.writeSideBySide(new File(liliPreviewDir, 'scale-stand-80px-per-block.png'), [
+                SayaProjection.render(obj, ['blade', 'blade_damaged'], src, 0.25d, 4, 120),
+                SayaProjection.render(obj, ['blade', 'blade_damaged', 'sheath'], out, 0.25d, 4, 120),
+                SayaProjection.render(obj, ['sheath'], out, 0.25d, 4, 120)])
+        // 删前 / 删后:**用原始模型 + 原始贴图**对照当前网格 + 当前贴图,同尺度并排
+        if (liliSourceObj.isFile()) {
+            def srcObj = LiliSayaTexture.read(liliSourceObj)
+            LiliSayaTexture.writeSideBySide(new File(liliPreviewDir, 'mesh-before-after.png'), [
+                    SayaProjection.render(srcObj, ['blade', 'blade_damaged', 'sheath'], src, 0.25d, 4, 120),
+                    SayaProjection.render(obj, ['blade', 'blade_damaged', 'sheath'], out, 0.25d, 4, 120)])
+        }
+
+        // ---- 统计(判读用)----
+        int trimCount = 0
+        int ivoryCount = 0
+        for (int y = 0; y < h; y++) {
+            double row = y / (double) (h - 1)
+            for (int x = 0; x < w; x++) {
+                int i = y * w + x
+                if (!paint[i]) {
+                    continue
+                }
+                if (mouthMask[i] || row <= bandLo || row >= bandHi) {
+                    trimCount++
+                } else {
+                    ivoryCount++
+                }
+            }
+        }
+        println '===== generateLiliTexture ====='
+        println "  源图      : ${liliSourcePng}(${liliSourcePng.length()} B,不可变)"
+        println "  产物      : ${liliTargetPng}(${liliTargetPng.length()} B)"
+        println String.format(Locale.ROOT, '  象牙白底  : #%02X%02X%02X → #%02X%02X%02X(渐变 %.2f,鞘口亮/鞘尻暗)',
+                base.red, base.green, base.blue, edge.red, edge.green, edge.blue, gradient)
+        println String.format(Locale.ROOT, '  金箍      : %s',
+                trimOffProp ? '关闭(-PsayaTrimOff 生效)'
+                        : String.format('#%02X%02X%02X(鞘尻端 %.0f%% + 鞘口端 %.0f%%,按鞘长)', trim.red, trim.green, trim.blue, kojiFrac * 100.0d, mouthFrac * 100.0d))
+        println String.format(Locale.ROOT, '  金箍阈值  : 按鞘长(采样行)直接算:行 ∈ [%d, %d] ⇒ 箍在行 ≤ %.3f 与行 ≥ %.3f(各占鞘长 %.0f%% / %.0f%%)',
+                rowMin, rowMax, bandLo, bandHi, kojiFrac * 100.0d, mouthFrac * 100.0d)
+        println String.format(Locale.ROOT, '  图集      : %d×%d(原始素材 %d× 放大放在 %d,%d;鞘的区域由几何反推)',
+                w, h, LiliAtlasLayout.ORIG_SCALE, LiliAtlasLayout.ORIG_X, LiliAtlasLayout.ORIG_Y)
+        println String.format(Locale.ROOT, '  鞘的 UV 区域: x[%d, %d] y[%d, %d] = %d×%d px(比例 1:%.1f;鞘周长 31.7 / 长 260.8 ⇒ 理想 1:8.2)',
+                region[0], region[2], region[1], region[3], region[2] - region[0] + 1, region[3] - region[1] + 1,
+                (region[3] - region[1] + 1) / (double) (region[2] - region[0] + 1))
+        if (art != null) {
+            println String.format(Locale.ROOT, '  AI 纹样    : %s(底部 %d px %s;统一缩放+水平镜像+%d 层;接缝色差 %.1f → %.1f;纹样非底色占比 %.1f%%)',
+                    sayaArtFile.name, cropBottomProp, mirrorPadProp ? '镜像替换去水印' : '直接裁掉',
+                    layersProp, artSeamBefore, artSeamAfter, artInk * 100.0d) + (minPoolProp ? ',线稿 min 池化' : '')
+        } else {
+            println '  AI 纹样    : 未使用(程序渐变;放 art/saya_ai.png 或用 -PsayaArt=... 即可启用)'
+        }
+        println "  轮廓      : ${outline == null ? '关闭' : String.format('#%02X%02X%02X', outline.red, outline.green, outline.blue)}"
+        println "  鞘掩码    : ${LiliSayaTexture.count(sheathMask)} px(占贴图 ${(100.0d * LiliSayaTexture.count(sheathMask) / (w * h)).round(1)}%)"
+        println "  保护集    : ${protectedCount} px 与刀身共用 ⇒ 一个像素都不改"
+        println "  上色      : ${paintCount} px(纹样/底色 ${ivoryCount} + 金箍 ${trimCount})"
+        println "  鞘口段面数: ${mouthFaces.size()} / ${sheathFaces.size()}(u 重心 > ${LiliSayaTexture.MOUTH_U})"
+        println "  预览      : ${liliPreviewDir}"
+        println '===== 结束(断言在 verifyResources:鞘身亮度、金像素数、掩码外零改动)====='
+    }
+}

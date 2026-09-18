@@ -1,0 +1,7 @@
+{
+  "credit": "手持 Slash 元件(8 格拔刀剑)。verifyResources 会按 registerItem(\"portable_slash_cell\") 找本文件。",
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "applied_slash:item/portable_slash_cell"
+  }
+}

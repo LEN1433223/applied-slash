@@ -4,9 +4,8 @@ import java.util.EnumSet;
 import java.util.Set;
 
 import com.applied.slash.AppliedSlashConfig;
-import com.applied.slash.charged.ChargedBladeEnergy;
-import com.applied.slash.charged.ChargedBladeFactory;
-import com.applied.slash.charged.ChargedBladeItem;
+import com.applied.slash.SlashBladeBlades;
+import com.applied.slash.charged.BladeEnergy;
 
 import appeng.api.config.AccessRestriction;
 import appeng.api.config.Actionable;
@@ -171,7 +170,7 @@ public class BladeChargerBlockEntity extends AEBaseBlockEntity
         Set<Direction> exposedSides = EnumSet.allOf(Direction.class);
         mainNode.setExposedOnSides(exposedSides);
         // 空闲耗电交给节点自己托管(节点在线即耗),我们不去改缓冲
-        mainNode.setIdlePowerUsage(AppliedSlashConfig.chargedBladeIdleDrain());
+        mainNode.setIdlePowerUsage(AppliedSlashConfig.chargerIdleDrain());
         // 事实表 §8.3 的答案:这样 AE2 的能量服务才会往我们的缓冲注入
         mainNode.addService(IAEPowerStorage.class, this);
         mainNode.create(level, worldPosition);
@@ -364,7 +363,7 @@ public class BladeChargerBlockEntity extends AEBaseBlockEntity
      * <p>流程(PLAN §6.3 定稿 + 本轮取电路径修正):
      * <ol>
      *   <li>惰性恢复存档内容 + 惰性建节点(都需要 {@code level != null},所以放在这里而不是构造函数);</li>
-     *   <li>槽里没刀 / 不是充能刀 ⇒ IDLE,不耗电;</li>
+     *   <li>槽里没刀 / 不是拔刀剑 ⇒ IDLE,不耗电;</li>
      *   <li>刀自愈一次(能量组件缺席视作满,与背包里的刀同一条规则);</li>
      *   <li>算需求:{@code needPoints = min(perTick, max - energy)};满 / 需求为 0 ⇒ 只更新状态行并返回
      *       (与 {@link ChargerMath#chargeTick} 的前两段同口径:FULL 与「perTick ≤ 0 时的 CHARGING」);</li>
@@ -390,16 +389,17 @@ public class BladeChargerBlockEntity extends AEBaseBlockEntity
         be.initializeNode();
 
         ItemStack blade = be.blade;
-        if (blade.isEmpty() || !(blade.getItem() instanceof ChargedBladeItem)) {
+        // 槽位口径(2026-02 改):**任意拔刀剑**都能充 —— 5 把自设充能刀已删除,
+        // 现在服务的是数据包刀(如「莉莉」)与重锋本体/其它附属的刀。
+        if (blade.isEmpty() || !SlashBladeBlades.isSlashBlade(blade)) {
             be.lastState = ChargerMath.STATE_IDLE;
             return;
         }
-        ChargedBladeFactory.ensureInitialized(blade);
 
-        int energy = ChargedBladeEnergy.get(blade);
-        int max = ChargedBladeEnergy.max(blade);
-        int aePerPoint = Math.max(1, AppliedSlashConfig.chargedBladeAePerPoint());
-        int perTick = AppliedSlashConfig.chargedBladeChargePerTick();
+        int energy = BladeEnergy.get(blade);
+        int max = BladeEnergy.max(blade);
+        int aePerPoint = Math.max(1, AppliedSlashConfig.chargerAePerPoint());
+        int perTick = AppliedSlashConfig.chargerChargePerTick();
 
         // 需求为零(满 / 上限非法 / perTick ≤ 0):不取电,只把状态行写成与旧口径一致的值
         if (max <= 0 || energy >= max) {
@@ -415,7 +415,7 @@ public class BladeChargerBlockEntity extends AEBaseBlockEntity
         // 第一来源:网格。抽到电就直接充,不再碰本机缓冲(避免同一 tick 双份记账)
         int fromGrid = be.drawFromGrid(needPoints, aePerPoint);
         if (fromGrid > 0) {
-            ChargedBladeEnergy.set(blade, energy + fromGrid);
+            BladeEnergy.set(blade, energy + fromGrid);
             be.setChanged();
             be.lastState = ChargerMath.STATE_CHARGING;
             return;
@@ -426,7 +426,7 @@ public class BladeChargerBlockEntity extends AEBaseBlockEntity
         ChargerMath.ChargeTick tick = ChargerMath.chargeTick(energy, max, (long) be.storedAe, aePerPoint, perTick);
         if (tick.state() == ChargerMath.STATE_CHARGING) {
             be.storedAe = Math.max(0, be.storedAe - tick.aeConsumed());
-            ChargedBladeEnergy.set(blade, tick.newEnergy());
+            BladeEnergy.set(blade, tick.newEnergy());
             be.setChanged();
         }
         be.lastState = tick.state();
@@ -631,10 +631,10 @@ public class BladeChargerBlockEntity extends AEBaseBlockEntity
         }
     }
 
-    /** 槽位只收本模组的充能刀,且永远只有 1 件。 */
+    /** 槽位只收**拔刀剑**(任意一把,含数据包刀「莉莉」),且永远只有 1 件。 */
     @Override
     public boolean canPlaceItem(int slot, ItemStack stack) {
-        return slot == SLOT_BLADE && !stack.isEmpty() && stack.getItem() instanceof ChargedBladeItem;
+        return slot == SLOT_BLADE && SlashBladeBlades.isSlashBlade(stack);
     }
 
     @Override
@@ -684,7 +684,7 @@ public class BladeChargerBlockEntity extends AEBaseBlockEntity
             case DATA_ENERGY -> getStoredAe();
             case DATA_MAX -> (int) Math.min(Integer.MAX_VALUE, maxStoredAe);
             case DATA_STATE -> lastState;
-            case DATA_AE_PER_POINT -> AppliedSlashConfig.chargedBladeAePerPoint();
+            case DATA_AE_PER_POINT -> AppliedSlashConfig.chargerAePerPoint();
             default -> 0;
         };
     }

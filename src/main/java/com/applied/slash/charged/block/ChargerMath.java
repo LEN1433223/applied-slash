@@ -7,7 +7,7 @@ package com.applied.slash.charged.block;
  * 避免「多取了 AE 却没地方放」。不足一点就不充(不制造半点余数语义)。
  */
 public final class ChargerMath {
-    /** 槽里没刀(或不是充能刀):不耗电。 */
+    /** 槽里没刀(或不是拔刀剑):不耗电。 */
     public static final int STATE_IDLE = 0;
     /** 正在充能。 */
     public static final int STATE_CHARGING = 1;
@@ -15,6 +15,13 @@ public final class ChargerMath {
     public static final int STATE_FULL = 2;
     /** 网络缺电(实取 AE 不足一点):不充、不扣。 */
     public static final int STATE_NO_AE = 3;
+    /**
+     * 正在烧燃料自产 KAE(虞美人 → 缓冲)。
+     *
+     * <p>只在「网格没电 **且** 本机缓冲凑不齐一点」时才可能出现 —— 有电可用的那几种情形
+     * 一律记 {@link #STATE_CHARGING}。界面把它与 CHARGING 同色显示,因为它同样是「正在工作」。
+     */
+    public static final int STATE_GENERATING = 4;
 
     private ChargerMath() {
     }
@@ -51,7 +58,7 @@ public final class ChargerMath {
      *   <li><b>不越界</b>:{@code points ≤ needPoints},所以 {@code newEnergy ≤ max}。</li>
      * </ol>
      *
-     * <p>槽为空 / 不是充能刀时由调用方判 {@link #STATE_IDLE},不进入本函数。
+     * <p>槽为空 / 不是拔刀剑时由调用方判 {@link #STATE_IDLE},不进入本函数。
      * {@code aePerPoint} 理论上有配置下限 1,这里仍做防御性 clamp(避免除零)。
      */
     public static ChargeTick chargeTick(int energy, int max, long availableAe, int aePerPoint, int perTick) {

@@ -1,4 +1,14 @@
 {
+  "item.applied_slash.seina": "星奈",
+  "item.applied_slash.shiori": "栞",
+  "item.applied_slash.kaede": "枫",
+  "item.applied_slash.portable_slash_cell": "Slash 元件",
+  "item.applied_slash.portable_slash_cell.tooltip.usage": "已装入 %s / %s 把拔刀剑",
+  "item.applied_slash.portable_slash_cell.tooltip.hint": "手持右键打开界面(需充电);装入的每把刀为「莉莉」提供其 10% 基础伤害,与快捷栏共享 8 把上限(元件内优先)",
+  "item.applied_slash.portable_slash_cell.tooltip.exclusive": "只接受拔刀剑;同 NBT 也不合并,各占一格",
+  "se.applied_slash.inventory_transfer": "爱与羁绊",
+  "se.applied_slash.inventory_transfer.desc": "羁绊让你获得力量",
+
   "itemGroup.applied_slash": "Slash存储元件",
 
   "item.applied_slash.slash_blade_cell": "SlashBlade存储元件",
@@ -34,20 +44,28 @@
   "command.applied_slash.inspect.extract_reinsert": "原样放回 = %s(应等于上一个数字,净改动为 0)",
   "command.applied_slash.inspect.error": "诊断过程异常:%s",
 
-  "item.applied_slash.charged_blade_pulse": "充能刀·脉冲",
-  "item.applied_slash.charged_blade_resonance": "充能刀·谐振",
-  "item.applied_slash.charged_blade_surge": "充能刀·涌流",
-  "item.applied_slash.charged_blade_overcharge": "充能刀·超荷",
-  "item.applied_slash.charged_blade_singularity": "充能刀·奇点",
-  "item.applied_slash.charged_blade.tooltip.energy": "能量 %s / %s",
-  "item.applied_slash.charged_blade.tooltip.empty": "能量耗尽:无法使用",
-  "item.applied_slash.charged_blade.tooltip.quantize": "入库按 1/10 档记录(取出取下界,最多少 %s 点)",
+  "item.applied_slash.lili": "莉莉",
 
   "block.applied_slash.blade_charger": "拔刀剑充能器",
   "container.applied_slash.blade_charger": "拔刀剑充能器",
   "applied_slash.blade_charger.status.idle": "未放刀",
   "applied_slash.blade_charger.status.charging": "充能中(%s AE/点)",
   "applied_slash.blade_charger.status.full": "已充满",
-  "applied_slash.blade_charger.status.no_ae": "网络缺电",
-  "applied_slash.charged_blade.no_energy_hint": "能量耗尽:无法攻击"
+  "applied_slash.blade_charger.status.no_ae": "网络没电,槽里也没虞美人",
+  "applied_slash.blade_charger.status.generating": "烧虞美人自产(%s AE/朵 · %s 刻)",
+  "applied_slash.blade_charger.label.energy": "能量",
+  "applied_slash.blade_charger.label.fuel": "虞美人",
+  "applied_slash.blade_charger.label.buffer": "缓冲",
+  "applied_slash.blade_charger.value.energy": "%s / %s",
+  "applied_slash.blade_charger.value.fuel": "%s 朵 · %s%%",
+  "applied_slash.blade_charger.value.fuel.empty": "空",
+  "applied_slash.blade_charger.value.buffer": "%s",
+  "applied_slash.blade_charger.tip.buffer": "本机能量缓冲",
+  "applied_slash.blade_charger.tip.fuel.title": "虞美人",
+  "applied_slash.blade_charger.tip.fuel.use": "可作为特殊催化剂:烧掉它自产 KAE",
+  "applied_slash.blade_charger.tip.fuel.rate": "每朵 %s AE · 耗时 %s 刻 · 当前燃烧 %s%%",
+  "applied_slash.blade_charger.tip.help.title": "怎么用",
+  "applied_slash.blade_charger.tip.help.blade": "① 把拔刀剑放进左边的槽(任意拔刀剑都可以,包括莉莉)",
+  "applied_slash.blade_charger.tip.help.fuel": "② 虞美人放右边:它不被吃进机器,而是烧掉自产 KAE",
+  "applied_slash.blade_charger.tip.help.energy": "③ 能量行是刀自己的读数;缓冲条是机器内部存量,悬停有详细状态"
 }

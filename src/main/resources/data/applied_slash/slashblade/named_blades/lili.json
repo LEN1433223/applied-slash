@@ -1,0 +1,18 @@
+{
+  "item": "slashblade:slashblade",
+  "name": "applied_slash:lili",
+  "properties": {
+    "attack_base": 14.13,
+    "max_damage": 100,
+    "slash_art": "slashblade:drive_horizontal",
+    "special_effects": ["applied_slash:inventory_transfer"],
+    "sword_type": ["bewitched"]
+  },
+  "render": {
+    "carry_type": "default",
+    "model": "slashblade:model/named/sange/sange.obj",
+    "texture": "applied_slash:models/lili/uv1.png",
+    "summon_sword_color": 16086667
+  },
+  "enchantments": []
+}

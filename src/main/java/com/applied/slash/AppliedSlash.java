@@ -5,11 +5,13 @@ import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 
 import com.applied.slash.command.AppliedSlashCommand;
+import com.applied.slash.se.LiliSpecialEffects;
 
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.CreativeModeTabs;
+import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
@@ -58,16 +60,21 @@ public class AppliedSlash {
                         output.accept(AppliedSlashAe2.SLASH_BLADE_CELL.get());
                         // 与拔刀剑元件并列的第二个元件(不可堆叠物品存储元件)
                         output.accept(AppliedSlashAe2.UNSTACKABLE_ITEM_CELL.get());
-                        // 5 把充能拔刀剑(出厂即带默认刀身数据 + 满能量)+ 专用充能方块。
-                        //
-                        // 关于类加载:这个 lambda 只有在创造界面构建时才执行,那时 SlashBlade 与 AE2
-                        // 两类前置的类才会被加载 —— 而 displayItems 现在挂在 isAe2Loaded() 分支里注册,
-                        // 且两个前置都已是 required,所以是安全的。**但不要**因此以为可以在 lambda 里
-                        // 随便引用前置类:一旦前置回到 optional,这里的加载时机就是唯一的防线。
-                        for (com.applied.slash.charged.ChargedBladeItem blade
-                                : com.applied.slash.charged.ChargedBladeItems.all()) {
-                            output.accept(com.applied.slash.charged.ChargedBladeFactory.fresh(blade));
+                        // 手持「Slash 元件」(AE2 便携元件,需充电;容量 8 把拔刀剑)。
+                        // 漏了这一步就会"物品注册了、模型也在,但创造栏里根本看不到"——踩过一次,记在这里。
+                        output.accept(AppliedSlashAe2.PORTABLE_SLASH_CELL.get());
+                        // 四把数据包刀:莉莉 / 枫 / 栞 / 星奈(见 AppliedBlades)。
+                        // 都是"注册了必须上架"的那类物品 —— 漏掉就只在创造栏看不见(踩过一次)。
+                        for (String blade : AppliedBlades.ALL) {
+                            ItemStack stack = AppliedBlades.stack(parameters.holders(), blade);
+                            if (!stack.isEmpty()) {
+                                output.accept(stack);
+                            }
                         }
+                        // 说明:莉莉也走上面的 AppliedBlades.ALL 循环,这里不再单独 accept,
+                        // 否则创造栏里会出现两把莉莉(重复上架)。
+                        // 类加载门卫由 AppliedBlades 内部统一负责(isSlashBladeLoaded)。
+                        // 拔刀剑充能器(AE 供电;槽位接受任意拔刀剑)
                         output.accept(com.applied.slash.charged.block.BladeChargerRegistry.BLADE_CHARGER_ITEM.get());
                     })
                     .build());
@@ -92,15 +99,17 @@ public class AppliedSlash {
             LOGGER.warn("未检测到 Applied Energistics 2 (modid \"{}\"),SlashBlade存储元件不会被注册。", AE2_MODID);
         }
 
-        // 5 把充能拔刀剑:引用 ItemSlashBlade 的类只能在这里的门卫之后注册(与 AE2 同一个约定)。
-        // 改 required 之后本分支必然为真,但保留结构以免破坏「前置缺席也不 NoClassDefFoundError」。
-        if (isSlashBladeLoaded()) {
-            com.applied.slash.charged.ChargedBladeItems.register(modEventBus);
-            // 游戏总线:第二保证(UpdateAttackEvent 压伤害)+ 断刀双保险 + actionbar 节流。
-            // 方法签名里出现 SlashBladeEvent ⇒ 注册那一刻会加载它,所以必须在这道门卫里。
-            com.applied.slash.charged.ChargedBladeEvents.register();
+        // 5 把自设充能刀已删除:现在没有任何"引用 ItemSlashBlade 的物品类"要在这里注册 ——
+        // 拔刀剑「莉莉」走数据包(见 data/applied_slash/slashblade/named_blades/lili.json),
+        // 物品是重锋自己的 slashblade:slashblade,注册时机完全由它掌握。
+        // 保留本分支只为在缺前置时给出明确告警,不给后续留"以为这里注册了什么"的坑。
+        if (!isSlashBladeLoaded()) {
+            LOGGER.warn("未检测到 SlashBlade (modid \"{}\"),存储元件将识别不到任何拔刀剑,莉莉也不会出现。", SLASHBLADE_MODID);
         } else {
-            LOGGER.warn("未检测到 SlashBlade (modid \"{}\"),存储元件将识别不到任何拔刀剑。", SLASHBLADE_MODID);
+            // 莉莉的 SE(背包内其它拔刀剑 15% 伤害转加到自身)。
+            // 与 AE2 同理:LiliSpecialEffects 及其下游类直接引用重锋类型 ⇒ 必须走门卫,
+            // 重锋缺席时这些类根本不会被类加载。
+            LiliSpecialEffects.register(modEventBus);
         }
 
         NeoForge.EVENT_BUS.register(this);

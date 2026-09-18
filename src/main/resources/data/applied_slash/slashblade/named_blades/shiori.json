@@ -1,0 +1,18 @@
+{
+  "item": "slashblade:slashblade",
+  "name": "applied_slash:shiori",
+  "properties": {
+    "attack_base": 13.2,
+    "max_damage": 150,
+    "slash_art": "slashblade:piercing",
+    "special_effects": ["applied_slash:inventory_transfer"],
+    "sword_type": ["bewitched"]
+  },
+  "render": {
+    "carry_type": "default",
+    "model": "slashblade:model/named/sange/sange.obj",
+    "texture": "applied_slash:models/shiori/uv.png",
+    "summon_sword_color": 15774876
+  },
+  "enchantments": []
+}

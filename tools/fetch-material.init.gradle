@@ -1,0 +1,86 @@
+// 学习材料抓取探针(init script,不参与正式构建)
+//
+// 用途:把公开仓库的源码树抓到本地 build/material/ 下,供离线阅读与对比。
+// 走 JVM(Java 21 HttpClient),因此在受限沙箱里也能出网(与 tools/ci-dep-probe.init.gradle 同样的思路)。
+//
+// 用法:gradlew -I tools/fetch-material.init.gradle fetchMaterial -PmaterialRepo=owner/name
+
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.net.URI
+import groovy.json.JsonSlurper
+
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+
+    root.tasks.register('fetchMaterial') {
+        group = 'verification'
+        description = '抓取公开仓库源码树到 build/material/(只读学习用)'
+        notCompatibleWithConfigurationCache('诊断任务,doLast 里读 Project 并出网')
+
+        doLast {
+            def repo = root.findProperty('materialRepo') ?: 'sangeeeee/Slashblade-Murasame'
+            def outDir = new File(root.projectDir, 'build/material')
+            outDir.mkdirs()
+
+            def client = HttpClient.newBuilder()
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .connectTimeout(java.time.Duration.ofSeconds(30))
+                    .build()
+
+            def ua = 'applied-slash-material-fetch'
+            def getText = { String url ->
+                def req = HttpRequest.newBuilder(URI.create(url))
+                        .header('User-Agent', ua)
+                        .header('Accept', 'application/vnd.github+json')
+                        .timeout(java.time.Duration.ofSeconds(60))
+                        .GET().build()
+                client.send(req, HttpResponse.BodyHandlers.ofString())
+            }
+
+            println "===== fetchMaterial: ${repo} ====="
+            def meta = getText("https://api.github.com/repos/${repo}")
+            println "meta HTTP = ${meta.statusCode()}"
+            if (meta.statusCode() != 200) {
+                println "  body: ${meta.body().take(300)}"
+                return
+            }
+            def m = new JsonSlurper().parseText(meta.body())
+            println "  full_name   = ${m.full_name}"
+            println "  description = ${m.description}"
+            println "  language    = ${m.language}   stars=${m.stargazers_count}  forks=${m.forks_count}"
+            println "  default_branch = ${m.default_branch}   pushed_at=${m.pushed_at}"
+            println "  license     = ${m.license?.spdx_id}   archived=${m.archived}   size=${m.size} KB"
+            println "  topics      = ${m.topics}"
+
+            def branch = m.default_branch
+            def tbUrl = "https://codeload.github.com/${repo}/tar.gz/refs/heads/${branch}"
+            def dst = new File(outDir, 'murasame.tar.gz')
+            def req = HttpRequest.newBuilder(URI.create(tbUrl))
+                    .header('User-Agent', ua)
+                    .timeout(java.time.Duration.ofMinutes(5))
+                    .GET().build()
+            def res = client.send(req, HttpResponse.BodyHandlers.ofFile(dst.toPath()))
+            println "  tarball HTTP = ${res.statusCode()}   bytes = ${dst.length()}   -> ${dst}"
+
+            // 顶层条目概览(不落盘,直接从 GitHub 拿一次树)
+            def tree = getText("https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1")
+            if (tree.statusCode() == 200) {
+                def t = new JsonSlurper().parseText(tree.body())
+                def paths = t.tree.collect { it.path }
+                println "  文件总数(递归) = ${paths.size()}   truncated=${t.truncated}"
+                def byExt = paths.findAll { it.contains('.') }.groupBy { it.substring(it.lastIndexOf('.') + 1) }
+                        .collectEntries { k, v -> [(k): v.size()] }.sort { -it.value }.take(12)
+                println "  按扩展名 = ${byExt}"
+                println "  --- 顶层目录 ---"
+                paths.collect { it.contains('/') ? it.substring(0, it.indexOf('/')) : it }.unique().sort().each { println "    ${it}" }
+                println "  --- 前 60 个文件 ---"
+                paths.take(60).each { println "    ${it}" }
+            } else {
+                println "  tree HTTP = ${tree.statusCode()}"
+            }
+            println '===== 结束 ====='
+        }
+    }
+}

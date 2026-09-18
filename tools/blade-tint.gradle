@@ -1,0 +1,66 @@
+
+// ----------------------------------------------------------------------------
+// 任务:bladeTint(-Pblade=<kaede|shiori|seina> 或 --all)—— 给刀身图集做定向染色
+// ----------------------------------------------------------------------------
+// 目的:三张图集除"菱形立绘岛"外与莉莉几乎一样 ⇒ 手持时看不出区别。这里按刀把**非立绘区域**
+//       染色(鞘/樱枝/柄卷等),立绘岛原样保留。
+// 做法:逐像素转 HSB;仅对**有彩色**(饱和度 ≥ 0.15)的像素改色相到目标值并缩放饱和度,
+//       灰度(刀身钢色)与白/黑(鞘身、描边)保持不动 ⇒ 不会把刀身染成橙的,也不会糊掉明暗。
+// 目标色相:枫=25°暖橙、栞=20°米桃(低饱和)、星奈=275°银紫。
+// ----------------------------------------------------------------------------
+def BLADE_TINTS = [
+        kaede : [hue: 25.0f / 360.0f, sat: 1.25f, zh: '枫(暖橙)'],
+        shiori: [hue: 20.0f / 360.0f, sat: 0.55f, zh: '栞(米桃,低饱和)'],
+        seina : [hue: 275.0f / 360.0f, sat: 1.10f, zh: '星奈(银紫)']]
+
+// 菱形立绘岛(实测 uv 岛坐标换算成整图比例;留 2% 余量确保立绘一像素都不动)
+def PORTRAIT = [x0: 0.450d, x1: 0.883d, y0: 0.151d, y1: 0.367d]
+
+def bladeAtlasDir = new File(project.projectDir, 'src/main/resources/assets/applied_slash/models')
+def bladeAtlasBak = new File(project.projectDir, 'art/blade_atlases_src')
+
+tasks.register('bladeTint') {
+    group = 'applied slash tooling'
+    description = '给枫/栞/星奈的刀身图集做定向染色(立绘岛不动);-Pblade=<id> 可只做一把'
+    notCompatibleWithConfigurationCache('本任务在 doLast 里读写贴图')
+
+    doLast {
+        System.setProperty('java.awt.headless', 'true')
+        def only = project.findProperty('blade')
+        def targets = only ? [only.toString()] : BLADE_TINTS.keySet().sort()
+        println '===== bladeTint(定向染色,立绘岛保留)====='
+        targets.each { id ->
+            def tint = BLADE_TINTS[id]
+            if (tint == null) { println "  跳过(未知刀): ${id}"; return }
+            def file = new File(bladeAtlasDir, "${id}/uv.png")
+            if (!file.isFile()) { println "  跳过(缺图集): ${id}"; return }
+            def img = javax.imageio.ImageIO.read(file)
+            int W = img.width, H = img.height
+            int px0 = (int) (W * PORTRAIT.x0), px1 = (int) (W * PORTRAIT.x1)
+            int py0 = (int) (H * PORTRAIT.y0), py1 = (int) (H * PORTRAIT.y1)
+            int tinted = 0, kept = 0
+            def out = new java.awt.image.BufferedImage(W, H, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            for (int y = 0; y < H; y++) {
+                for (int x = 0; x < W; x++) {
+                    int argb = img.getRGB(x, y)
+                    // 立绘岛(以及其外 2% 余量)原样保留
+                    boolean inPortrait = x >= px0 && x <= px1 && y >= py0 && y <= py1
+                    if (inPortrait) { out.setRGB(x, y, argb); kept++; continue }
+                    int a = (argb >>> 24) & 0xFF
+                    if (a == 0) { out.setRGB(x, y, argb); continue }
+                    float[] hsb = java.awt.Color.RGBtoHSB((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, null)
+                    if (hsb[1] < 0.15f) { out.setRGB(x, y, argb); continue }   // 灰度/白/黑不动
+                    float s = Math.min(1.0f, hsb[1] * tint.sat)
+                    int rgb = java.awt.Color.HSBtoRGB((float) tint.hue, (float) s, hsb[2])
+                    out.setRGB(x, y, (a << 24) | (rgb & 0xFFFFFF))
+                    tinted++
+                }
+            }
+            javax.imageio.ImageIO.write(out, 'png', file)
+            println String.format(Locale.ROOT, '  %-8s %-16s 染色像素 %8d  立绘区保留 %8d  %d KB',
+                    id, tint.zh, tinted, kept, (int) (file.length() / 1024))
+        }
+        println '  备份:art/blade_atlases_src/(要回退就把文件拷回 models/<id>/uv.png)'
+        println '===== 结束(接着跑 verifyResources 确认资源链仍然通过)====='
+    }
+}
